@@ -1,36 +1,26 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://github.com/vercel/next.js/tree/canary/packages/create-next-app).
+# Turret UI (Next.js)
 
-## Getting Started
+This is the web-based user interface for the Camera Turret System, built with [Next.js](https://nextjs.org). It allows users to control the turret and view the live camera feed.
 
-First, run the development server:
+## Features
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+- Live video stream from the turret camera
+- Controls for turret movement (pan/tilt)
+- Responsive and modern UI
+- Hot-reloading in development
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Project Structure
 
-You can start editing the page by modifying `app/page.js`. The page auto-updates as you edit the file.
+- `src/app/`: Main application code (pages, layout, styles)
+- `public/`: Static assets (images, icons)
+- `next.config.mjs`: Next.js configuration
+- `Dockerfile`: Containerization for development/production
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Development with Docker Compose
 
-## Learn More
+The UI is set up to work seamlessly with the backend and camera stream services using Docker Compose. See the root-level `README.md` for instructions on running the full system.
 
-To learn more about Next.js, take a look at the following resources:
+## Customization
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Edit `src/app/page.js` to modify the main page.
+- Update styles in `src/app/globals.css`.
