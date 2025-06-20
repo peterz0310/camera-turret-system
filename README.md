@@ -43,3 +43,22 @@ This project is a modular camera turret system consisting of a web-based UI, a c
 ### Firmware
 - Firmware is managed separately using PlatformIO.
 - See `firmware/cam/` and `firmware/motors/` for details.
+
+### Parts List
+
+| Part Description                        | Link                                                                 |
+|-----------------------------------------|----------------------------------------------------------------------|
+| Screw terminals (for electrical)        | [Amazon](https://www.amazon.com/dp/B0D7VRSH1G?ref=ppx_yo2ov_dt_b_fed_asin_title&th=1) |
+| Cooling fans (for electronics box)      | [Amazon](https://www.amazon.com/dp/B07P7DQ3VG?ref=ppx_yo2ov_dt_b_fed_asin_title)       |
+| Nema 17 motors 1.5a 42x42x38mm (x2)     | [Amazon](https://www.amazon.com/dp/B0B38GX54H?ref=ppx_yo2ov_dt_b_fed_asin_title)       |
+| ESP32 Cam                               | [Amazon](https://www.amazon.com/dp/B0948ZFTQZ?ref=ppx_yo2ov_dt_b_fed_asin_title)       |
+| 8mm flange coupling connectors          | [Amazon](https://www.amazon.com/dp/B0CSVZQHZY?ref=ppx_yo2ov_dt_b_fed_asin_title)       |
+| 8x100mm shafts                          | [Amazon](https://www.amazon.com/dp/B01NCOMFLT?ref=ppx_yo2ov_dt_b_fed_asin_title)       |
+| Assorted M3 screws                      | [Amazon](https://www.amazon.com/dp/B0D3X5CT2J?ref=ppx_yo2ov_dt_b_fed_asin_title)       |
+| Closed loop rubber belts                | [Amazon](https://www.amazon.com/dp/B088M3V865?ref=ppx_yo2ov_dt_b_fed_asin_title)       |
+
+### 3D printed parts
+
+Many parts of this project are 3D printed. I used a BambuLabs A1 and PETG filament, but any printer with a sufficiently large build area should be fine.
+
+Files are available on MakerWorld.
