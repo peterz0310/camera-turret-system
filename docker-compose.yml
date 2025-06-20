@@ -1,0 +1,21 @@
+version: "3"
+services:
+  turret-ui:
+    build: ./ui
+    command: npm run dev
+    ports:
+      - "3000:3000"
+    working_dir: /app
+    volumes:
+      - ./ui:/app
+      - /app/node_modules
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+    stdin_open: true
+    tty: true
+    depends_on:
+      - camera-stream
+
+  camera-stream:
+    build: ./camera-stream
+    network_mode: "host"
