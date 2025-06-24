@@ -3,30 +3,24 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Joystick } from "react-joystick-component";
 
-// --- Configuration ---
 const WEBSOCKET_URL = "ws://192.168.4.29/ws";
 const CAMERA_STREAM_URL = "http://192.168.4.57:8081/stream";
 const MAX_RECONNECT_ATTEMPTS = 5;
 
 function App() {
-  // WebSocket state
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [connectionError, setConnectionError] = useState(null);
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
   const reconnectAttemptsRef = useRef(0);
-
-  // --- FIX: Stabilize the stream URL ---
-  // We will only change this URL when we explicitly want to force a reload.
   const [streamUrl, setStreamUrl] = useState("");
   const [isStreamLoading, setIsStreamLoading] = useState(true);
   const [streamError, setStreamError] = useState(null);
-
-  // UI State
   const [crosshairEnabled, setCrosshairEnabled] = useState(false);
   const [selectedCrosshair, setSelectedCrosshair] = useState("crosshair-1.png");
   const [crosshairPanelOpen, setCrosshairPanelOpen] = useState(false);
+  const [crosshairSize, setCrosshairSize] = useState(128); // Default size in pixels
 
   // --- WebSocket Logic (unchanged) ---
   const connectWebSocket = () => {
@@ -88,6 +82,20 @@ function App() {
     };
   }, []); // Empty dependency array ensures this runs only ONCE.
 
+  // Close crosshair panel when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (crosshairPanelOpen && !event.target.closest('.crosshair-panel-container')) {
+        setCrosshairPanelOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [crosshairPanelOpen]);
+
   // --- Event Handlers for the image stream ---
   const handleStreamLoad = () => {
     console.log("✅ Camera stream image has loaded.");
@@ -127,15 +135,154 @@ function App() {
     }
   };
 
+  // --- Crosshair Control Functions ---
+  const handleCrosshairToggle = (option) => {
+    if (option === "off") {
+      setCrosshairEnabled(false);
+    } else {
+      setCrosshairEnabled(true);
+      setSelectedCrosshair(option);
+    }
+    setCrosshairPanelOpen(false);
+  };
+
+  const handleCrosshairSizeChange = (e) => {
+    setCrosshairSize(parseInt(e.target.value));
+  };
+
   // --- Render ---
   return (
     <div className="relative min-h-screen bg-slate-900 text-white overflow-hidden">
-      {/* Header and Controls (unchanged) */}
+      {/* Header and Controls */}
       <div className="absolute top-2 left-1/2 transform -translate-x-1/2 z-20">
         <h1 className="text-3xl font-bold text-center">Turret Control</h1>
       </div>
+      
+      {/* Crosshair Controls */}
+      <div className="absolute top-4 left-4 z-20">
+        <div className="relative crosshair-panel-container">
+          <button
+            onClick={() => setCrosshairPanelOpen(!crosshairPanelOpen)}
+            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-white transition-colors flex items-center gap-2"
+          >
+            🎯 Crosshair
+            <span className="text-xs">
+              {crosshairEnabled ? selectedCrosshair.replace('.png', '').replace('-', ' ') : 'Off'}
+            </span>
+          </button>
+          
+          {crosshairPanelOpen && (
+            <div className="absolute top-12 left-0 bg-gray-800 border border-gray-600 rounded-lg p-4 min-w-64 shadow-lg">
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold text-gray-300 mb-2">Crosshair Options</h3>
+                
+                {/* Crosshair Selection */}
+                <div className="space-y-2">
+                  <button
+                    onClick={() => handleCrosshairToggle("off")}
+                    className={`w-full px-3 py-2 rounded text-left transition-colors ${
+                      !crosshairEnabled 
+                        ? 'bg-blue-600 text-white' 
+                        : 'bg-gray-700 hover:bg-gray-600 text-gray-300'
+                    }`}
+                  >
+                    Off
+                  </button>
+                  <button
+                    onClick={() => handleCrosshairToggle("crosshair-1.png")}
+                    className={`w-full px-3 py-2 rounded text-left transition-colors ${
+                      crosshairEnabled && selectedCrosshair === "crosshair-1.png"
+                        ? 'bg-blue-600 text-white' 
+                        : 'bg-gray-700 hover:bg-gray-600 text-gray-300'
+                    }`}
+                  >
+                    Crosshair 1
+                  </button>
+                  <button
+                    onClick={() => handleCrosshairToggle("crosshair-2.png")}
+                    className={`w-full px-3 py-2 rounded text-left transition-colors ${
+                      crosshairEnabled && selectedCrosshair === "crosshair-2.png"
+                        ? 'bg-blue-600 text-white' 
+                        : 'bg-gray-700 hover:bg-gray-600 text-gray-300'
+                    }`}
+                  >
+                    Crosshair 2
+                  </button>
+                </div>
+                
+                {/* Size Control */}
+                {crosshairEnabled && (
+                  <div className="border-t border-gray-600 pt-3 mt-3">
+                    <label className="block text-sm font-medium text-gray-300 mb-2">
+                      Size: {crosshairSize}px
+                    </label>
+                    <input
+                      type="range"
+                      min="32"
+                      max="256"
+                      step="16"
+                      value={crosshairSize}
+                      onChange={handleCrosshairSizeChange}
+                      className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer slider"
+                    />
+                    <div className="flex justify-between text-xs text-gray-400 mt-1">
+                      <span>32px</span>
+                      <span>256px</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+      
       <div className="absolute top-4 right-4 z-20 flex flex-col gap-3 items-end">
-        {/* ... connection status and buttons ... */}
+        {/* Connection Status */}
+        <div className="flex items-center gap-2">
+          <div
+            className={`w-3 h-3 rounded-full ${
+              connected ? "bg-green-500" : connecting ? "bg-yellow-500" : "bg-red-500"
+            }`}
+          />
+          <span className="text-sm">
+            {connected ? "Connected" : connecting ? "Connecting..." : "Disconnected"}
+          </span>
+        </div>
+
+        {/* Error Message */}
+        {connectionError && (
+          <div className="text-red-400 text-sm text-right">
+            {connectionError}
+          </div>
+        )}
+
+        {/* Control Buttons */}
+        <div className="flex gap-2">
+          <button
+            onClick={connected ? disconnectWebSocket : connectWebSocket}
+            disabled={connecting}
+            className={`px-4 py-2 rounded text-sm transition-colors ${
+              connected
+                ? "bg-red-600 hover:bg-red-700 text-white"
+                : "bg-green-600 hover:bg-green-700 text-white"
+            } ${connecting ? "opacity-50 cursor-not-allowed" : ""}`}
+          >
+            {connected ? "Disconnect" : "Connect"}
+          </button>
+
+          <button
+            onClick={handleCalibrate}
+            disabled={!connected}
+            className={`px-4 py-2 rounded text-sm transition-colors ${
+              connected
+                ? "bg-blue-600 hover:bg-blue-700 text-white"
+                : "bg-gray-600 text-gray-400 cursor-not-allowed"
+            }`}
+          >
+            Calibrate
+          </button>
+        </div>
       </div>
 
       {/* Camera Feed Display */}
@@ -155,7 +302,7 @@ function App() {
                 </div>
             ) : (
                 <>
-                    {/* --- FIX: Use the stable streamUrl from state --- */}
+
                     {streamUrl && (
                         <img
                             src={streamUrl}
@@ -178,7 +325,11 @@ function App() {
                         <img
                           src={`/${selectedCrosshair}`}
                           alt="Crosshair"
-                          className="w-32 h-32 opacity-80"
+                          className="opacity-80"
+                          style={{
+                            width: `${crosshairSize}px`,
+                            height: `${crosshairSize}px`
+                          }}
                         />
                       </div>
                     )}
@@ -188,24 +339,20 @@ function App() {
       </div>
 
       {/* Joystick */}
-      <div className="absolute right-8 top-1/2 transform -translate-y-1/2 z-10">
-        <div className="relative">
-          <Joystick
-            size={250}
-            stickSize={50}
-            baseColor="rgba(102, 102, 102, 0.8)"
-            stickColor="#0af"
-            move={handleMove}
-            stop={handleStop}
-            disabled={!connected}
-          />
-          {!connected && (
-            <div className="absolute inset-0 bg-black/50 rounded-full flex items-center justify-center">
-              <span className="text-white text-sm font-medium">Disconnected</span>
-            </div>
-          )}
+      {connected && (
+        <div className="absolute right-8 top-1/2 transform -translate-y-1/2 z-10">
+          <div className="relative">
+            <Joystick
+              size={250}
+              stickSize={50}
+              baseColor="rgba(102, 102, 102, 0.8)"
+              stickColor="#0af"
+              move={handleMove}
+              stop={handleStop}
+            />
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
