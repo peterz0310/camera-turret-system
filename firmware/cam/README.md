@@ -9,7 +9,6 @@ This directory contains the PlatformIO project for the camera module of the turr
 
 ## Structure
 - `src/`: Main source code for the camera firmware.
-- `lib/`: Additional libraries used by the firmware.
 - `platformio.ini`: PlatformIO project configuration.
 
 ## Getting Started

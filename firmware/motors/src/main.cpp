@@ -63,7 +63,7 @@ void calibrateMotor()
 
   // Move left until limit switch is hit
   Serial.println("Moving to left limit...");
-  stepper.setSpeed(-maxStepsPerSec * 0.3); // Slow speed for calibration
+  stepper.setSpeed(-maxStepsPerSec * 0.3);
   while (canMoveLeft())
   {
     stepper.runSpeed();
@@ -121,7 +121,7 @@ void motorTask(void *parameter)
     if (fabs(currentX) > deadzone)
     {
       float normX = (fabs(currentX) - deadzone) / (1.0 - deadzone);
-      float exponent = 2.0; // scaling
+      float exponent = 2.0;
       float mappedSpeed = pow(normX, exponent) * maxStepsPerSec;
 
       // Check limit switches before setting speed
@@ -272,7 +272,5 @@ void setup()
 
 void loop()
 {
-  // Main loop can handle network operations, etc.
-  // Keeping it lightweight to avoid interference
   yield();
 }

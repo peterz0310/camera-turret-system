@@ -30,9 +30,9 @@ def stream_generator():
     try:
         with open(FALLBACK_IMAGE_PATH, "rb") as f:
             fallback_frame_bytes = f.read()
-        print("✅ Fallback image loaded successfully.")
+        print("Fallback image loaded successfully.")
     except FileNotFoundError:
-        print(f"🚨 CRITICAL: Fallback image not found at {FALLBACK_IMAGE_PATH}")
+        print(f"CRITICAL: Fallback image not found at {FALLBACK_IMAGE_PATH}")
         return
 
     fallback_mjpeg_frame = generate_mjpeg_frame(fallback_frame_bytes)
@@ -59,11 +59,11 @@ def stream_generator():
                     yield generate_mjpeg_frame(jpg_frame)
                     
         except (requests.exceptions.RequestException, requests.exceptions.HTTPError) as e:
-            print(f"🚫 ESP32 stream unavailable: {type(e).__name__}. Streaming fallback.")
+            print(f"ESP32 stream unavailable: {type(e).__name__}. Streaming fallback.")
             yield fallback_mjpeg_frame
             time.sleep(RECONNECT_DELAY)
         except Exception as e:
-            print(f"🚨 An unexpected error occurred: {e}")
+            print(f"An unexpected error occurred: {e}")
             yield fallback_mjpeg_frame
             time.sleep(RECONNECT_DELAY)
 

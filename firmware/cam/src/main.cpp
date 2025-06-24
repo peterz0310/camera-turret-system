@@ -3,7 +3,6 @@
 #include <WebServer.h>
 #include "esp_camera.h"
 
-// Replace with your network credentials
 const char *ssid = "Apt 210";
 const char *password = "mistycanoe3";
 
@@ -59,7 +58,7 @@ void handleJPGStream()
       Serial.println("Camera capture failed");
       // A short delay to prevent a tight loop of failures
       delay(100);
-      continue; // Try again
+      continue;
     }
 
     // Write the frame boundary and content type directly to the client
@@ -71,8 +70,6 @@ void handleJPGStream()
 
     // Return the frame buffer to be reused
     esp_camera_fb_return(fb);
-
-    // No delay is needed here, the frame rate is limited by camera capture speed
   }
 
   Serial.println("Client disconnected.");
@@ -120,11 +117,8 @@ void setup()
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
 
-  // Use VGA for a good balance of quality and speed
   config.frame_size = FRAMESIZE_VGA;
-  // Lower quality means smaller files and faster transmission
   config.jpeg_quality = 12;
-  // Increased frame buffer count for more robust streaming
   config.fb_count = 4;
   config.fb_location = CAMERA_FB_IN_PSRAM;
   config.grab_mode = CAMERA_GRAB_LATEST;
