@@ -25,6 +25,18 @@ const CrosshairIcon = ({ className }) => (
     </svg>
 );
 
+const TargetIcon = ({ className }) => (
+  <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v6h-2V7zm0 8h2v2h-2v-2z"/>
+  </svg>
+);
+
+const BurstFireIcon = ({ className }) => (
+  <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+    <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+  </svg>
+);
+
 
 function App() {
   const [connected, setConnected] = useState(false);
@@ -37,11 +49,14 @@ function App() {
   const [selectedCrosshair, setSelectedCrosshair] = useState("crosshair-1.png");
   const [crosshairPanelOpen, setCrosshairPanelOpen] = useState(false);
   const [crosshairSize, setCrosshairSize] = useState(128);
+  const [triggerActive, setTriggerActive] = useState(false);
+  const [lastFireTime, setLastFireTime] = useState(0);
 
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
   const reconnectAttemptsRef = useRef(0);
   const crosshairPanelRef = useRef(null);
+  const triggerPanelRef = useRef(null);
 
   // --- WEBSOCKET LOGIC ---
   const connectWebSocket = () => {
@@ -107,6 +122,33 @@ function App() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Keyboard shortcuts for trigger controls
+  useEffect(() => {
+    const handleKeyPress = (event) => {
+      if (!connected || triggerActive) return;
+      
+      switch (event.key.toLowerCase()) {
+        case ' ':
+        case 'f':
+          event.preventDefault();
+          handleFireSingle();
+          break;
+        case 'b':
+        case 'v':
+          event.preventDefault();
+          handleFireBurst();
+          break;
+        case 'c':
+          event.preventDefault();
+          handleCalibrate();
+          break;
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyPress);
+    return () => document.removeEventListener('keydown', handleKeyPress);
+  }, [connected, triggerActive]);
+
   // --- EVENT HANDLERS ---
   const handleStreamLoad = () => {
     console.log("✅ [CAM] Video Feed Synchronized");
@@ -138,6 +180,28 @@ function App() {
     if (connected) wsRef.current?.send(JSON.stringify({ calibrate: true }));
   };
   
+  const handleFireSingle = () => {
+    if (connected && !triggerActive) {
+      setTriggerActive(true);
+      setLastFireTime(Date.now());
+      wsRef.current?.send(JSON.stringify({ fire: "single" }));
+      console.log("🎯 [FIRE] Single shot command sent");
+      // Reset trigger active state after a reasonable delay
+      setTimeout(() => setTriggerActive(false), 1000);
+    }
+  };
+
+  const handleFireBurst = () => {
+    if (connected && !triggerActive) {
+      setTriggerActive(true);
+      setLastFireTime(Date.now());
+      wsRef.current?.send(JSON.stringify({ fire: "burst" }));
+      console.log("🎯 [FIRE] Burst fire command sent (3 rounds)");
+      // Reset trigger active state after burst duration (1.5s + buffer)
+      setTimeout(() => setTriggerActive(false), 2000);
+    }
+  };
+  
   const handleCrosshairToggle = (option) => {
     if (option === "off") {
       setCrosshairEnabled(false);
@@ -150,6 +214,11 @@ function App() {
 
   const handleCrosshairSizeChange = (e) => setCrosshairSize(parseInt(e.target.value));
 
+  const handleTriggerControl = () => {
+    setTriggerActive((prev) => !prev);
+    if (connected) wsRef.current?.send(JSON.stringify({ trigger: !triggerActive }));
+  };
+
   // --- STYLING & CLASSES ---
   const controlButtonClass = "flex items-center gap-2 px-3 py-1.5 border border-cyan-400/30 bg-black/30 text-cyan-400 rounded-sm hover:bg-cyan-400/20 hover:text-cyan-300 transition-all duration-300 backdrop-blur-sm text-xs uppercase font-mono tracking-wider disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-black/30 disabled:hover:text-cyan-400";
   const crosshairOptionClass = (isActive) =>
@@ -158,6 +227,10 @@ function App() {
         ? 'bg-cyan-600 text-white'
         : 'bg-gray-700/50 hover:bg-gray-600/70 text-gray-300'
     }`;
+
+  // Calculate time since last fire for visual feedback
+  const timeSinceLastFire = Date.now() - lastFireTime;
+  const recentlyFired = timeSinceLastFire < 3000; // Show feedback for 3 seconds
 
 
   return (
@@ -231,6 +304,34 @@ function App() {
           <CalibrateIcon className="w-5 h-5" />
           <span>Calibrate</span>
         </button>
+
+        {/* Fire Control Panel */}
+        <div className="flex flex-col gap-2 pointer-events-auto">
+          <button
+            onClick={handleFireSingle}
+            disabled={!connected || triggerActive}
+            className={`${controlButtonClass} ${triggerActive ? 'opacity-50 cursor-not-allowed' : 'hover:border-orange-400/50 hover:text-orange-300'}`}
+          >
+            <TargetIcon className="w-5 h-5" />
+            <span>Single Shot</span>
+          </button>
+          
+          <button
+            onClick={handleFireBurst}
+            disabled={!connected || triggerActive}
+            className={`${controlButtonClass} ${triggerActive ? 'opacity-50 cursor-not-allowed' : 'hover:border-red-400/50 hover:text-red-300'}`}
+          >
+            <BurstFireIcon className="w-5 h-5" />
+            <span>Burst Fire</span>
+          </button>
+        </div>
+
+        {/* Trigger Status */}
+        {triggerActive && (
+          <div className="bg-red-900/50 border border-red-500/50 px-3 py-1.5 rounded-sm text-xs uppercase font-mono tracking-wider backdrop-blur-sm animate-pulse pointer-events-auto">
+            <span className="text-red-400">⚡ FIRING</span>
+          </div>
+        )}
       </div>
 
 
@@ -244,6 +345,18 @@ function App() {
             {connected ? "ACTIVE" : connecting ? "LINKING..." : "SEVERED"}
           </span>
         </div>
+
+        {/* Keyboard Shortcuts */}
+        {connected && (
+          <div className="bg-black/40 border border-cyan-500/30 px-3 py-2 rounded-sm backdrop-blur-sm">
+            <h4 className="text-xs uppercase font-mono tracking-wider text-cyan-400 mb-1">Hotkeys</h4>
+            <div className="text-xs font-mono text-gray-400 space-y-0.5">
+              <div><span className="text-cyan-300">F/SPACE:</span> Single Fire</div>
+              <div><span className="text-cyan-300">B/V:</span> Burst Fire</div>
+              <div><span className="text-cyan-300">C:</span> Calibrate</div>
+            </div>
+          </div>
+        )}
 
         {/* Error Message */}
         {connectionError && (
@@ -310,6 +423,18 @@ function App() {
                             height: `${crosshairSize}px`
                           }}
                         />
+                      </div>
+                    )}
+
+                    {/* Muzzle Flash Effect */}
+                    {triggerActive && (
+                      <div className="absolute inset-0 bg-orange-300/20 animate-muzzleFlash pointer-events-none" />
+                    )}
+
+                    {/* Recent Fire Indicator */}
+                    {recentlyFired && !triggerActive && (
+                      <div className="absolute top-4 left-4 bg-orange-900/70 border border-orange-500/50 px-2 py-1 rounded-sm text-xs font-mono text-orange-300 animate-fadeIn">
+                        ROUND FIRED: {Math.floor((3000 - timeSinceLastFire) / 1000) + 1}s
                       </div>
                     )}
                 </>

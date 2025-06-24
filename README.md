@@ -56,6 +56,8 @@ This project is a modular camera turret system consisting of a web-based UI, a c
 | 8x100mm shafts                          | [Amazon](https://www.amazon.com/dp/B01NCOMFLT?ref=ppx_yo2ov_dt_b_fed_asin_title)       |
 | Assorted M3 screws                      | [Amazon](https://www.amazon.com/dp/B0D3X5CT2J?ref=ppx_yo2ov_dt_b_fed_asin_title)       |
 | Closed loop rubber belts                | [Amazon](https://www.amazon.com/dp/B088M3V865?ref=ppx_yo2ov_dt_b_fed_asin_title)       |
+| DRV8825 stepper motor driver            | [Amazon](https://www.amazon.com/dp/B0C2CHTLCG?ref=ppx_yo2ov_dt_b_fed_asin_title)       |
+| Various Dupont jumper cables            | [Amazon](https://www.amazon.com/dp/B01EV70C78?ref=nb_sb_ss_w_as-reorder_k0_1_6&crid=1AK8URVEZEDLV&sprefix=dupont)           |
 
 ### 3D printed parts
 

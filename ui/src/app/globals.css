@@ -1,5 +1,45 @@
 @import "tailwindcss";
 
+/* Custom animations */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes muzzleFlash {
+  0% { opacity: 0; }
+  50% { opacity: 0.3; }
+  100% { opacity: 0; }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.3s ease-out;
+}
+
+.animate-muzzleFlash {
+  animation: muzzleFlash 0.15s ease-out;
+}
+
+/* Range slider styling */
+.range-slider::-webkit-slider-thumb {
+  appearance: none;
+  height: 20px;
+  width: 20px;
+  border-radius: 50%;
+  background: #00ffff;
+  cursor: pointer;
+  border: 2px solid #0a192f;
+}
+
+.range-slider::-moz-range-thumb {
+  height: 20px;
+  width: 20px;
+  border-radius: 50%;
+  background: #00ffff;
+  cursor: pointer;
+  border: 2px solid #0a192f;
+}
+
 :root {
   --background: #ffffff;
   --foreground: #171717;

@@ -3,6 +3,7 @@
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 #include <AccelStepper.h>
+#include <ESP32Servo.h>
 
 // WiFi and WebSocket settings
 const char *ssid = "Apt 210";
@@ -19,6 +20,20 @@ const int microstepFactor = 2;
 const int baseMaxStepsPerSec = 1000;
 const int maxStepsPerSec = baseMaxStepsPerSec * microstepFactor;
 const float deadzone = 0.1;
+
+// Servo motor settings for trigger
+const int SERVO_PIN = 27;            // GPIO pin for servo control
+const int SERVO_REST_ANGLE = 0;      // Rest position (trigger not pulled)
+const int SERVO_FIRE_ANGLE = 90;     // Fire position (trigger pulled)
+const int TRIGGER_DELAY_MS = 150;    // How long to hold trigger pulled
+const int BURST_SHOT_DELAY_MS = 500; // Delay between shots in burst mode
+
+// Servo and trigger control variables
+Servo triggerServo;
+volatile bool triggerActive = false; // Prevents overlapping trigger calls
+unsigned long burstStartTime = 0;
+int burstShotCount = 0;
+bool inBurstMode = false;
 
 // Limit switch variables
 volatile bool leftLimitHit = false;
@@ -54,6 +69,76 @@ bool canMoveLeft()
 bool canMoveRight()
 {
   return !rightLimitHit;
+}
+
+// Trigger control functions
+void pullTrigger()
+{
+  triggerServo.write(SERVO_FIRE_ANGLE);
+  delay(TRIGGER_DELAY_MS);
+  triggerServo.write(SERVO_REST_ANGLE);
+  delay(50); // Small delay to ensure servo reaches rest position
+}
+
+void fireSingleShot()
+{
+  if (triggerActive)
+  {
+    Serial.println("Trigger already active - ignoring single shot command");
+    return;
+  }
+
+  triggerActive = true;
+  Serial.println("Firing single shot");
+  pullTrigger();
+  triggerActive = false;
+  Serial.println("Single shot complete");
+}
+
+void startBurstFire()
+{
+  if (triggerActive)
+  {
+    Serial.println("Trigger already active - ignoring burst fire command");
+    return;
+  }
+
+  triggerActive = true;
+  inBurstMode = true;
+  burstShotCount = 0;
+  burstStartTime = millis();
+  Serial.println("Starting burst fire mode (3 shots in 1.5 seconds)");
+}
+
+void updateBurstFire()
+{
+  if (!inBurstMode || !triggerActive)
+    return;
+
+  unsigned long currentTime = millis();
+  unsigned long elapsedTime = currentTime - burstStartTime;
+
+  // Calculate when each shot should fire (spread over 1.5 seconds)
+  // Shot 1: 0ms, Shot 2: 500ms, Shot 3: 1000ms
+  unsigned long shotTimes[] = {0, 500, 1000};
+
+  if (burstShotCount < 3)
+  {
+    if (elapsedTime >= shotTimes[burstShotCount])
+    {
+      Serial.printf("Firing burst shot %d/3\n", burstShotCount + 1);
+      pullTrigger();
+      burstShotCount++;
+    }
+  }
+
+  // End burst mode after 1.5 seconds or all shots fired
+  if (elapsedTime >= 1500 || burstShotCount >= 3)
+  {
+    inBurstMode = false;
+    triggerActive = false;
+    Serial.println("Burst fire complete");
+  }
 }
 
 // Calibration function - moves to both limits to establish working range
@@ -114,6 +199,9 @@ void motorTask(void *parameter)
 
   for (;;)
   {
+    // Handle burst fire timing
+    updateBurstFire();
+
     float currentX = joystickX;
     float currentY = joystickY;
     float currentSpeed = 0.0;
@@ -164,11 +252,12 @@ void motorTask(void *parameter)
     {
       lastLogTime = currentMillis;
       float percentSpeed = (fabs(currentSpeed) / maxStepsPerSec) * 100.0;
-      Serial.printf("Motor speed: %.2f%% | Limits: L=%s R=%s | Pos: %ld\n",
+      Serial.printf("Motor speed: %.2f%% | Limits: L=%s R=%s | Pos: %ld | Trigger: %s\n",
                     percentSpeed,
                     leftLimitHit ? "HIT" : "OK",
                     rightLimitHit ? "HIT" : "OK",
-                    stepper.currentPosition());
+                    stepper.currentPosition(),
+                    triggerActive ? "ACTIVE" : "READY");
     }
 
     // Minimal delay to yield to other tasks
@@ -208,6 +297,24 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
       Serial.println("Calibration requested via WebSocket");
       calibrateMotor();
     }
+
+    // Check for trigger commands
+    if (doc.containsKey("fire"))
+    {
+      String fireMode = doc["fire"].as<String>();
+      if (fireMode == "single")
+      {
+        fireSingleShot();
+      }
+      else if (fireMode == "burst")
+      {
+        startBurstFire();
+      }
+      else
+      {
+        Serial.println("Unknown fire mode: " + fireMode);
+      }
+    }
     break;
   }
   default:
@@ -239,6 +346,11 @@ void setup()
   // Initialize stepper settings
   stepper.setMaxSpeed(maxStepsPerSec);
 
+  // Initialize servo motor for trigger
+  triggerServo.attach(SERVO_PIN);
+  triggerServo.write(SERVO_REST_ANGLE); // Set to rest position
+  Serial.println("Trigger servo initialized at rest position");
+
   // Connect to WiFi
   WiFi.begin(ssid, password);
   Serial.print("Connecting to WiFi");
@@ -267,7 +379,12 @@ void setup()
       1            // Core where the task should run (0 or 1)
   );
 
-  Serial.println("System ready! Send {\"calibrate\": true} via WebSocket to calibrate limits.");
+  Serial.println("System ready!");
+  Serial.println("Available WebSocket commands:");
+  Serial.println("  - {\"calibrate\": true} - Calibrate motor limits");
+  Serial.println("  - {\"fire\": \"single\"} - Fire single shot");
+  Serial.println("  - {\"fire\": \"burst\"} - Fire 3-shot burst");
+  Serial.println("  - {\"x\": 0.5, \"y\": 0.0} - Control turret movement");
 }
 
 void loop()
