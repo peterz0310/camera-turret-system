@@ -3,76 +3,97 @@ import requests
 import time
 import os
 from dotenv import load_dotenv
+from PIL import Image, ImageDraw
+import io
+import random
 
 load_dotenv()
 
 ESP32_CAM_URL = os.getenv("ESP32_CAM_URL", "http://192.168.4.1/stream")
-FALLBACK_IMAGE_PATH = "fallback.jpg"
 REQUEST_TIMEOUT = 2.0
 RECONNECT_DELAY = 1.0
+STATIC_FRAME_WIDTH = 640
+STATIC_FRAME_HEIGHT = 480
+STATIC_FRAME_COUNT = 20
 
 app = Flask(__name__)
 
-def generate_mjpeg_frame(frame_bytes):
-    """Helper function to format a byte buffer as an MJPEG frame."""
+STATIC_FRAME_BUFFER = []
+
+
+def format_mjpeg_frame(frame_bytes):
+    """Formats image bytes as an MJPEG frame."""
     return (
         b"--frame\r\n"
         b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
     )
 
+def generate_static_frame():
+    """Generates a single frame of random static noise."""
+    img = Image.new('L', (STATIC_FRAME_WIDTH, STATIC_FRAME_HEIGHT))
+    pixels = [random.randint(0, 255) for _ in range(STATIC_FRAME_WIDTH * STATIC_FRAME_HEIGHT)]
+    img.putdata(pixels)
+    
+    byte_io = io.BytesIO()
+    img.save(byte_io, 'JPEG')
+    return byte_io.getvalue()
+
+def pre_generate_static_frames():
+    """
+    Runs ONCE on startup. Fills the global buffer with static frames to eliminate
+    CPU load during fallback operation.
+    """
+    print(f"Pre-generating {STATIC_FRAME_COUNT} static frames for fallback buffer...")
+    global STATIC_FRAME_BUFFER
+    for _ in range(STATIC_FRAME_COUNT):
+        STATIC_FRAME_BUFFER.append(generate_static_frame())
+    print("✅ Static frame buffer created.")
+
+
 def stream_generator():
     """
-    A resilient generator that continuously tries to connect to the ESP32 camera stream.
-    If the connection is lost or a frame isn't received, it yields a fallback image
-    and then immediately tries to reconnect without dropping the client connection.
+    A robust generator that attempts to stream the camera feed. On failure, it
+    efficiently streams pre-generated animated static from memory with very low CPU usage.
     """
-    fallback_frame_bytes = None
-    try:
-        with open(FALLBACK_IMAGE_PATH, "rb") as f:
-            fallback_frame_bytes = f.read()
-        print("Fallback image loaded successfully.")
-    except FileNotFoundError:
-        print(f"CRITICAL: Fallback image not found at {FALLBACK_IMAGE_PATH}")
-        return
-
-    fallback_mjpeg_frame = generate_mjpeg_frame(fallback_frame_bytes)
-
+    frame_index = 0
     while True:
         try:
+            print(f"Attempting to connect to camera at {ESP32_CAM_URL}...")
             r = requests.get(ESP32_CAM_URL, stream=True, timeout=REQUEST_TIMEOUT)
             r.raise_for_status()
-
-            # Read the stream chunk by chunk (each chunk is a frame)
-            # The 'iter_content' will yield chunks of the response body.
-            # For an MJPEG stream, the boundary is defined by the server, 
-            # and requests will hand us data as it comes in. We need to find the JPEG data.
-            # A common way ESP32 cameras send MJPEG is one JPEG per chunk.
+            print("✅ Camera stream connected.")
+            
             byte_buffer = b''
             for chunk in r.iter_content(chunk_size=4096):
                 byte_buffer += chunk
                 start = byte_buffer.find(b'\xff\xd8')
                 end = byte_buffer.find(b'\xff\xd9')
-
                 if start != -1 and end != -1:
                     jpg_frame = byte_buffer[start:end+2]
                     byte_buffer = byte_buffer[end+2:]
-                    yield generate_mjpeg_frame(jpg_frame)
-                    
+                    yield format_mjpeg_frame(jpg_frame)
+        
         except (requests.exceptions.RequestException, requests.exceptions.HTTPError) as e:
-            print(f"ESP32 stream unavailable: {type(e).__name__}. Streaming fallback.")
-            yield fallback_mjpeg_frame
-            time.sleep(RECONNECT_DELAY)
+            print(f"🚨 Camera stream unavailable: {type(e).__name__}. Streaming from buffer.")
+            
+            start_time = time.time()
+            while time.time() - start_time < RECONNECT_DELAY:
+                # Cycle through the pre-generated frames from the buffer
+                frame_to_send = STATIC_FRAME_BUFFER[frame_index]
+                yield format_mjpeg_frame(frame_to_send)
+                
+                # Advance the frame index for the next iteration
+                frame_index = (frame_index + 1) % len(STATIC_FRAME_BUFFER)
+                time.sleep(0.05) # Controls static animation FPS
+            print("Retrying camera connection...")
         except Exception as e:
-            print(f"An unexpected error occurred: {e}")
-            yield fallback_mjpeg_frame
+            print(f"An unexpected error occurred: {e}. Retrying after delay.")
             time.sleep(RECONNECT_DELAY)
+
 
 @app.route("/stream")
 def stream():
-    """Endpoint to provide the live camera feed or a fallback."""
     print("🔄 Client connected to stream.")
-    # The mimetype tells the browser this is a multipart stream, where each part replaces the last.
-    # The boundary 'frame' is used to separate each image.
     return Response(
         stream_generator(),
         mimetype="multipart/x-mixed-replace; boundary=frame",
@@ -83,26 +104,16 @@ def stream():
             "Expires": "0"
         }
     )
-
-@app.route("/ping")
-def ping():
-    """A simple health check for the server itself."""
-    return "OK", 200
     
 @app.route("/")
 def index():
-    """A simple test page to view the stream directly."""
-    return """
-    <html>
-        <head><title>ESP32 Camera Stream</title></head>
-        <body>
-            <h1>Live Stream</h1>
-            <img src="/stream" width="640" height="480" />
-        </body>
-    </html>
-    """
+    return f"""<html><head><title>Stream</title></head><body>
+            <img src="/stream" width="{STATIC_FRAME_WIDTH}" height="{STATIC_FRAME_HEIGHT}" />
+            </body></html>"""
 
 if __name__ == "__main__":
-    print(f"Starting camera stream server...")
+    pre_generate_static_frames()
+    
+    print("\nStarting camera stream proxy server...")
     print(f"ESP32 Camera URL: {ESP32_CAM_URL}")
     app.run(host="0.0.0.0", port=8081)
