@@ -114,12 +114,12 @@ void setup()
   config.pin_sscb_scl = SIOC_GPIO_NUM;
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
-  config.xclk_freq_hz = 20000000;
+  config.xclk_freq_hz = 10000000;
   config.pixel_format = PIXFORMAT_JPEG;
 
-  config.frame_size = FRAMESIZE_VGA;
-  config.jpeg_quality = 12;
-  config.fb_count = 4;
+  config.frame_size = FRAMESIZE_HVGA;
+  config.jpeg_quality = 20;
+  config.fb_count = 3;
   config.fb_location = CAMERA_FB_IN_PSRAM;
   config.grab_mode = CAMERA_GRAB_LATEST;
 
@@ -130,11 +130,74 @@ void setup()
     return;
   }
 
+  // Wait a moment for the camera to stabilize
+  delay(1000);
+
   sensor_t *s = esp_camera_sensor_get();
   if (s)
   {
-    s->set_vflip(s, 1);                      // Flip the image vertically
-    s->set_hmirror(s, 1);                    // Flip the image horizontally
+    Serial.println("Configuring camera sensor settings...");
+
+    // Apply orientation settings - some sensors need multiple attempts
+    Serial.println("Applying camera orientation settings...");
+
+    // Try different combinations to handle various sensor behaviors
+    bool orientation_applied = false;
+
+    // First attempt: Standard flip settings (both vertical flip and horizontal mirror)
+    if (s->set_vflip(s, 1) == 0 && s->set_hmirror(s, 1) == 0)
+    {
+      delay(100); // Give sensor time to apply both settings
+      Serial.println("Applied vertical flip and horizontal mirror");
+      orientation_applied = true;
+    }
+    else
+    {
+      Serial.println("Combined flip settings failed, trying individual settings...");
+
+      // Reset any partial settings that might have been applied
+      s->set_vflip(s, 0);
+      s->set_hmirror(s, 0);
+      delay(100);
+
+      // Try just vertical flip
+      if (s->set_vflip(s, 1) == 0)
+      {
+        delay(50); // Give sensor time to apply setting
+        Serial.println("Applied vertical flip only");
+        orientation_applied = true;
+      }
+      else
+      {
+        // Reset vflip and try just horizontal mirror
+        s->set_vflip(s, 0);
+        delay(50);
+
+        if (s->set_hmirror(s, 1) == 0)
+        {
+          delay(50); // Give sensor time to apply setting
+          Serial.println("Applied horizontal mirror only");
+          orientation_applied = true;
+        }
+        else
+        {
+          Serial.println("No orientation settings worked, using sensor default");
+          s->set_vflip(s, 0);
+          s->set_hmirror(s, 0);
+          delay(50);
+        }
+      }
+    }
+
+    if (!orientation_applied)
+    {
+      Serial.println("Warning: Camera orientation settings may not be supported by this sensor");
+    }
+
+    // Give sensor time to apply settings
+    delay(500);
+
+    // Apply other sensor settings
     s->set_brightness(s, 0);                 // -2 to 2
     s->set_contrast(s, 0);                   // -2 to 2
     s->set_saturation(s, 0);                 // -2 to 2
@@ -155,6 +218,12 @@ void setup()
     s->set_lenc(s, 1);                       // 0 = disable, 1 = enable
     s->set_dcw(s, 1);                        // 0 = disable, 1 = enable
     s->set_colorbar(s, 0);                   // 0 = disable, 1 = enable
+
+    Serial.println("Camera sensor configuration complete");
+  }
+  else
+  {
+    Serial.println("Error: Could not get camera sensor handle");
   }
 
   WiFi.begin(ssid, password);
@@ -170,6 +239,18 @@ void setup()
   Serial.println(WiFi.localIP());
 
   startCameraServer();
+}
+
+// Function to test if camera orientation is working
+bool testCameraOrientation()
+{
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (fb)
+  {
+    esp_camera_fb_return(fb);
+    return true;
+  }
+  return false;
 }
 
 void loop()
