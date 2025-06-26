@@ -4,7 +4,9 @@ import React, { useState, useEffect, useRef } from "react";
 import { Joystick } from "react-joystick-component";
 
 const WEBSOCKET_URL = "ws://192.168.4.29/ws";
-const CAMERA_STREAM_URL = "http://192.168.4.57:8081/stream";
+const CAMERA_STREAM_BASE_URL = "http://192.168.4.57:8081";
+const CAMERA_STREAM_URL = `${CAMERA_STREAM_BASE_URL}/stream`;
+const API_URL = `${CAMERA_STREAM_BASE_URL}/api`;
 const MAX_RECONNECT_ATTEMPTS = 5;
 
 const PowerIcon = ({ className }) => (
@@ -37,6 +39,12 @@ const BurstFireIcon = ({ className }) => (
   </svg>
 );
 
+const AIIcon = ({ className }) => (
+  <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-2-13h4v2h-4zm0 4h4v6h-4z"/>
+  </svg>
+);
+
 
 function App() {
   const [connected, setConnected] = useState(false);
@@ -51,6 +59,7 @@ function App() {
   const [crosshairSize, setCrosshairSize] = useState(128);
   const [triggerActive, setTriggerActive] = useState(false);
   const [lastFireTime, setLastFireTime] = useState(0);
+  const [aiMode, setAiMode] = useState(false);
 
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
@@ -107,6 +116,7 @@ function App() {
 
   // --- COMPONENT LIFECYCLE & EFFECTS ---
   useEffect(() => {
+    // Set the stream URL once on initial load. It won't be changed again unless retried.
     setStreamUrl(`${CAMERA_STREAM_URL}?t=${Date.now()}`);
     connectWebSocket();
     return () => disconnectWebSocket();
@@ -142,12 +152,16 @@ function App() {
           event.preventDefault();
           handleCalibrate();
           break;
+        case 'a':
+          event.preventDefault();
+          handleAIToggle();
+          break;
       }
     };
 
     document.addEventListener('keydown', handleKeyPress);
     return () => document.removeEventListener('keydown', handleKeyPress);
-  }, [connected, triggerActive]);
+  }, [connected, triggerActive, aiMode]); // aiMode is needed here to get latest state in closure
 
   // --- EVENT HANDLERS ---
   const handleStreamLoad = () => {
@@ -219,10 +233,37 @@ function App() {
     if (connected) wsRef.current?.send(JSON.stringify({ trigger: !triggerActive }));
   };
 
+  // NEW: Handles AI toggle by calling API without reloading the stream
+  const handleAIToggle = async () => {
+    const newAiMode = !aiMode;
+    console.log(`🤖 [AI] Attempting to set mode to: ${newAiMode ? 'ENABLED' : 'DISABLED'}`);
+    try {
+      const response = await fetch(`${API_URL}/ai`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: newAiMode })
+      });
+      
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        // Set state from the authoritative server response
+        setAiMode(data.ai_enabled);
+        console.log(`✅ [AI] Mode successfully set to: ${data.ai_enabled ? 'ENABLED' : 'DISABLED'}`);
+      } else {
+        console.error('❌ [AI] Failed to toggle AI mode:', data.message || response.status);
+        // Optional: Add UI feedback for the user that the toggle failed.
+      }
+    } catch (error) {
+      console.error('❌ [AI] Network error while toggling AI mode:', error);
+       // Optional: Add UI feedback for the user that the toggle failed.
+    }
+  };
+
   // --- STYLING & CLASSES ---
-  const controlButtonClass = "flex items-center gap-2 px-3 py-1.5 border border-cyan-400/30 bg-black/30 text-cyan-400 rounded-sm hover:bg-cyan-400/20 hover:text-cyan-300 transition-all duration-300 backdrop-blur-sm text-xs uppercase font-mono tracking-wider disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-black/30 disabled:hover:text-cyan-400";
+  const controlButtonClass = "flex items-center gap-2 px-3 py-1.5 border border-cyan-400/30 bg-black/30 text-cyan-400 rounded-sm hover:bg-cyan-400/20 hover:text-cyan-300 transition-all duration-300 backdrop-blur-sm text-xs uppercase font-mono tracking-wider cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-black/30 disabled:hover:text-cyan-400";
   const crosshairOptionClass = (isActive) =>
-    `w-full px-3 py-2 text-left transition-colors duration-200 text-sm font-mono ${
+    `w-full px-3 py-2 text-left transition-colors duration-200 text-sm font-mono cursor-pointer ${
       isActive
         ? 'bg-cyan-600 text-white'
         : 'bg-gray-700/50 hover:bg-gray-600/70 text-gray-300'
@@ -255,14 +296,14 @@ function App() {
 
       {/* --- LEFT CONTROL PANEL --- */}
       <div className="absolute top-1/2 -translate-y-1/2 left-8 z-30 flex flex-col gap-4">
-         {/* Crosshair Controls */}
-         <div ref={crosshairPanelRef} className="relative crosshair-panel-container pointer-events-auto">
+          {/* Crosshair Controls */}
+          <div ref={crosshairPanelRef} className="relative crosshair-panel-container pointer-events-auto">
             <button
-                onClick={() => setCrosshairPanelOpen(!crosshairPanelOpen)}
-                className={controlButtonClass}
+              onClick={() => setCrosshairPanelOpen(!crosshairPanelOpen)}
+              className={controlButtonClass}
             >
-                <CrosshairIcon className="w-5 h-5"/>
-                <span>Targeting</span>
+              <CrosshairIcon className="w-5 h-5"/>
+              <span>Targeting</span>
             </button>
             
             {crosshairPanelOpen && (
@@ -303,6 +344,15 @@ function App() {
         >
           <CalibrateIcon className="w-5 h-5" />
           <span>Calibrate</span>
+        </button>
+
+        {/* AI Detection Toggle */}
+        <button
+          onClick={handleAIToggle}
+          className={`${controlButtonClass} ${aiMode ? 'border-green-400/50 text-green-400 hover:bg-green-400/20 hover:text-green-300' : 'hover:border-purple-400/50 hover:text-purple-300'}`}
+        >
+          <AIIcon className="w-5 h-5" />
+          <span>{aiMode ? 'AI ACTIVE' : 'AI STANDBY'}</span>
         </button>
 
         {/* Fire Control Panel */}
@@ -354,6 +404,21 @@ function App() {
               <div><span className="text-cyan-300">F/SPACE:</span> Single Fire</div>
               <div><span className="text-cyan-300">B/V:</span> Burst Fire</div>
               <div><span className="text-cyan-300">C:</span> Calibrate</div>
+              <div><span className="text-cyan-300">A:</span> Toggle AI</div>
+            </div>
+          </div>
+        )}
+
+        {/* AI Status Panel */}
+        {aiMode && (
+          <div className="bg-black/40 border border-green-500/30 px-3 py-2 rounded-sm backdrop-blur-sm">
+            <h4 className="text-xs uppercase font-mono tracking-wider text-green-400 mb-1">AI Detection</h4>
+            <div className="text-xs font-mono text-gray-400 space-y-0.5">
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+                <span className="text-green-300">YOLO v8n Active</span>
+              </div>
+              <div><span className="text-green-300">Model:</span> Person Detection</div>
             </div>
           </div>
         )}
@@ -387,7 +452,7 @@ function App() {
                         <p className="text-gray-400 mb-6 max-w-sm">{streamError}</p>
                         <button
                             onClick={retryStream}
-                            className="px-6 py-2 bg-cyan-600 hover:bg-cyan-700 rounded-sm text-white transition-colors duration-300 uppercase tracking-wider text-sm"
+                            className="px-6 py-2 bg-cyan-600 hover:bg-cyan-700 rounded-sm text-white transition-colors duration-300 uppercase tracking-wider text-sm cursor-pointer"
                         >
                             Attempt Resync
                         </button>
@@ -436,7 +501,7 @@ function App() {
                     )}
                 </>
             )}
-             {/* Scanlines Effect */}
+              {/* Scanlines Effect */}
             <div className="absolute inset-0 z-10 pointer-events-none opacity-10 bg-[linear-gradient(to_bottom,transparent_50%,black_50%)] bg-[size:100%_4px]"></div>
         </div>
       </div>
