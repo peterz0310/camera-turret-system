@@ -11,11 +11,18 @@ const char *password = "mistycanoe3";
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
 
-// Stepper motor settings
-const int STEP_PIN = 26;
-const int DIR_PIN = 25;
+// Horizontal stepper motor settings (left/right)
+const int H_STEP_PIN = 26;
+const int H_DIR_PIN = 25;
 const int LEFT_LIMIT_PIN = 32;
 const int RIGHT_LIMIT_PIN = 33;
+
+// Vertical stepper motor settings (up/down - tilt)
+const int V_STEP_PIN = 14;
+const int V_DIR_PIN = 12;
+const int UP_LIMIT_PIN = 4;
+const int DOWN_LIMIT_PIN = 5;
+
 const int microstepFactor = 2;
 const int baseMaxStepsPerSec = 1000;
 const int maxStepsPerSec = baseMaxStepsPerSec * microstepFactor;
@@ -35,19 +42,33 @@ unsigned long burstStartTime = 0;
 int burstShotCount = 0;
 bool inBurstMode = false;
 
+// Non-blocking trigger timing variables
+unsigned long triggerStartTime = 0;
+bool triggerInFirePosition = false;
+bool triggerReturning = false;
+
+// Burst fire needs separate timing from individual trigger pulls
+unsigned long nextBurstShotTime = 0;
+
 // Limit switch variables
 volatile bool leftLimitHit = false;
 volatile bool rightLimitHit = false;
-bool isCalibrated = false;
+volatile bool upLimitHit = false;
+volatile bool downLimitHit = false;
+bool isHorizontalCalibrated = false;
+bool isVerticalCalibrated = false;
 long leftLimitPosition = 0;
 long rightLimitPosition = 0;
+long upLimitPosition = 0;
+long downLimitPosition = 0;
 
 // Global joystick values (updated via WebSocket)
 volatile float joystickX = 0.0;
 volatile float joystickY = 0.0;
 
-// Create an AccelStepper instance
-AccelStepper stepper(AccelStepper::DRIVER, STEP_PIN, DIR_PIN);
+// Create AccelStepper instances
+AccelStepper horizontalStepper(AccelStepper::DRIVER, H_STEP_PIN, H_DIR_PIN);
+AccelStepper verticalStepper(AccelStepper::DRIVER, V_STEP_PIN, V_DIR_PIN);
 
 // Interrupt service routines for limit switches
 // These functions are called INSTANTLY when limit switches change state
@@ -61,6 +82,16 @@ void IRAM_ATTR rightLimitISR()
   rightLimitHit = digitalRead(RIGHT_LIMIT_PIN) == LOW;
 }
 
+void IRAM_ATTR upLimitISR()
+{
+  upLimitHit = digitalRead(UP_LIMIT_PIN) == LOW;
+}
+
+void IRAM_ATTR downLimitISR()
+{
+  downLimitHit = digitalRead(DOWN_LIMIT_PIN) == LOW;
+}
+
 bool canMoveLeft()
 {
   return !leftLimitHit;
@@ -71,13 +102,58 @@ bool canMoveRight()
   return !rightLimitHit;
 }
 
-// Trigger control functions
-void pullTrigger()
+bool canMoveUp()
 {
+  return !upLimitHit;
+}
+
+bool canMoveDown()
+{
+  return !downLimitHit;
+}
+
+// Non-blocking trigger control functions
+void startTriggerPull()
+{
+  if (triggerActive)
+  {
+    Serial.println("Trigger already active - ignoring command");
+    return;
+  }
+
+  triggerActive = true;
+  triggerInFirePosition = false;
+  triggerReturning = false;
+  triggerStartTime = millis();
+
+  Serial.println("Starting trigger pull");
   triggerServo.write(SERVO_FIRE_ANGLE);
-  delay(TRIGGER_DELAY_MS);
-  triggerServo.write(SERVO_REST_ANGLE);
-  delay(50); // Small delay to ensure servo reaches rest position
+  triggerInFirePosition = true;
+}
+
+void updateTrigger()
+{
+  if (!triggerActive)
+    return;
+
+  unsigned long currentTime = millis();
+  unsigned long elapsed = currentTime - triggerStartTime;
+
+  if (triggerInFirePosition && !triggerReturning && elapsed >= TRIGGER_DELAY_MS)
+  {
+    // Time to return trigger to rest position
+    triggerServo.write(SERVO_REST_ANGLE);
+    triggerReturning = true;
+    Serial.println("Returning trigger to rest");
+  }
+  else if (triggerReturning && elapsed >= (TRIGGER_DELAY_MS + 100))
+  {
+    // Trigger sequence complete
+    triggerActive = false;
+    triggerInFirePosition = false;
+    triggerReturning = false;
+    Serial.println("Trigger sequence complete");
+  }
 }
 
 void fireSingleShot()
@@ -88,108 +164,158 @@ void fireSingleShot()
     return;
   }
 
-  triggerActive = true;
   Serial.println("Firing single shot");
-  pullTrigger();
-  triggerActive = false;
-  Serial.println("Single shot complete");
+  startTriggerPull();
 }
 
 void startBurstFire()
 {
-  if (triggerActive)
+  if (triggerActive || inBurstMode)
   {
-    Serial.println("Trigger already active - ignoring burst fire command");
+    Serial.println("Trigger or burst already active - ignoring burst fire command");
     return;
   }
 
-  triggerActive = true;
   inBurstMode = true;
   burstShotCount = 0;
   burstStartTime = millis();
+  nextBurstShotTime = burstStartTime; // First shot fires immediately
   Serial.println("Starting burst fire mode (3 shots in 1.5 seconds)");
 }
 
 void updateBurstFire()
 {
-  if (!inBurstMode || !triggerActive)
+  if (!inBurstMode)
     return;
 
   unsigned long currentTime = millis();
-  unsigned long elapsedTime = currentTime - burstStartTime;
 
-  // Calculate when each shot should fire (spread over 1.5 seconds)
-  // Shot 1: 0ms, Shot 2: 500ms, Shot 3: 1000ms
-  unsigned long shotTimes[] = {0, 500, 1000};
-
-  if (burstShotCount < 3)
+  // Check if we can fire the next shot (trigger must be ready)
+  if (burstShotCount < 3 && !triggerActive && currentTime >= nextBurstShotTime)
   {
-    if (elapsedTime >= shotTimes[burstShotCount])
-    {
-      Serial.printf("Firing burst shot %d/3\n", burstShotCount + 1);
-      pullTrigger();
-      burstShotCount++;
-    }
+    Serial.printf("Firing burst shot %d/3\n", burstShotCount + 1);
+    startTriggerPull();
+    burstShotCount++;
+
+    // Schedule next shot 500ms later
+    nextBurstShotTime = currentTime + 500;
   }
 
   // End burst mode after 1.5 seconds or all shots fired
+  unsigned long elapsedTime = currentTime - burstStartTime;
   if (elapsedTime >= 1500 || burstShotCount >= 3)
   {
     inBurstMode = false;
-    triggerActive = false;
     Serial.println("Burst fire complete");
   }
 }
 
 // Calibration function - moves to both limits to establish working range
-void calibrateMotor()
+void calibrateHorizontalMotor()
 {
-  Serial.println("Starting motor calibration...");
+  Serial.println("Starting horizontal motor calibration...");
 
   // Move left until limit switch is hit
   Serial.println("Moving to left limit...");
-  stepper.setSpeed(-maxStepsPerSec * 0.3);
+  horizontalStepper.setSpeed(-maxStepsPerSec * 0.3);
   while (canMoveLeft())
   {
-    stepper.runSpeed();
+    horizontalStepper.runSpeed();
     delay(1);
   }
-  leftLimitPosition = stepper.currentPosition();
-  stepper.setSpeed(0);
+  leftLimitPosition = horizontalStepper.currentPosition();
+  horizontalStepper.setSpeed(0);
   Serial.printf("Left limit found at position: %ld\n", leftLimitPosition);
 
   // Move away from left limit a bit
-  stepper.move(100);
-  while (stepper.distanceToGo() != 0)
+  horizontalStepper.move(100);
+  while (horizontalStepper.distanceToGo() != 0)
   {
-    stepper.run();
+    horizontalStepper.run();
   }
 
   // Move right until limit switch is hit
   Serial.println("Moving to right limit...");
-  stepper.setSpeed(maxStepsPerSec * 0.3);
+  horizontalStepper.setSpeed(maxStepsPerSec * 0.3);
   while (canMoveRight())
   {
-    stepper.runSpeed();
+    horizontalStepper.runSpeed();
     delay(1);
   }
-  rightLimitPosition = stepper.currentPosition();
-  stepper.setSpeed(0);
+  rightLimitPosition = horizontalStepper.currentPosition();
+  horizontalStepper.setSpeed(0);
   Serial.printf("Right limit found at position: %ld\n", rightLimitPosition);
 
   // Move to center
   long centerPosition = (leftLimitPosition + rightLimitPosition) / 2;
-  stepper.moveTo(centerPosition);
-  while (stepper.distanceToGo() != 0)
+  horizontalStepper.moveTo(centerPosition);
+  while (horizontalStepper.distanceToGo() != 0)
   {
-    stepper.run();
+    horizontalStepper.run();
   }
 
-  isCalibrated = true;
-  Serial.println("Calibration complete!");
-  Serial.printf("Working range: %ld to %ld steps (%ld total)\n",
+  isHorizontalCalibrated = true;
+  Serial.println("Horizontal calibration complete!");
+  Serial.printf("Horizontal working range: %ld to %ld steps (%ld total)\n",
                 leftLimitPosition, rightLimitPosition,
                 rightLimitPosition - leftLimitPosition);
+}
+
+void calibrateVerticalMotor()
+{
+  Serial.println("Starting vertical motor calibration...");
+
+  // Move down until limit switch is hit
+  Serial.println("Moving to down limit...");
+  verticalStepper.setSpeed(-maxStepsPerSec * 0.3);
+  while (canMoveDown())
+  {
+    verticalStepper.runSpeed();
+    delay(1);
+  }
+  downLimitPosition = verticalStepper.currentPosition();
+  verticalStepper.setSpeed(0);
+  Serial.printf("Down limit found at position: %ld\n", downLimitPosition);
+
+  // Move away from down limit a bit
+  verticalStepper.move(100);
+  while (verticalStepper.distanceToGo() != 0)
+  {
+    verticalStepper.run();
+  }
+
+  // Move up until limit switch is hit
+  Serial.println("Moving to up limit...");
+  verticalStepper.setSpeed(maxStepsPerSec * 0.3);
+  while (canMoveUp())
+  {
+    verticalStepper.runSpeed();
+    delay(1);
+  }
+  upLimitPosition = verticalStepper.currentPosition();
+  verticalStepper.setSpeed(0);
+  Serial.printf("Up limit found at position: %ld\n", upLimitPosition);
+
+  // Move to center
+  long centerPosition = (downLimitPosition + upLimitPosition) / 2;
+  verticalStepper.moveTo(centerPosition);
+  while (verticalStepper.distanceToGo() != 0)
+  {
+    verticalStepper.run();
+  }
+
+  isVerticalCalibrated = true;
+  Serial.println("Vertical calibration complete!");
+  Serial.printf("Vertical working range: %ld to %ld steps (%ld total)\n",
+                downLimitPosition, upLimitPosition,
+                upLimitPosition - downLimitPosition);
+}
+
+void calibrateMotors()
+{
+  calibrateHorizontalMotor();
+  calibrateVerticalMotor();
+  Serial.println("All motors calibrated!");
 }
 
 void motorTask(void *parameter)
@@ -202,10 +328,15 @@ void motorTask(void *parameter)
     // Handle burst fire timing
     updateBurstFire();
 
+    // Handle non-blocking trigger control
+    updateTrigger();
+
     float currentX = joystickX;
     float currentY = joystickY;
-    float currentSpeed = 0.0;
+    float currentHorizontalSpeed = 0.0;
+    float currentVerticalSpeed = 0.0;
 
+    // Handle horizontal movement (X-axis)
     if (fabs(currentX) > deadzone)
     {
       float normX = (fabs(currentX) - deadzone) / (1.0 - deadzone);
@@ -215,49 +346,81 @@ void motorTask(void *parameter)
       // Check limit switches before setting speed
       if (currentX > 0 && canMoveRight())
       { // Moving right
-        currentSpeed = mappedSpeed;
-        stepper.setSpeed(currentSpeed);
+        currentHorizontalSpeed = mappedSpeed;
+        horizontalStepper.setSpeed(currentHorizontalSpeed);
       }
       else if (currentX < 0 && canMoveLeft())
       { // Moving left
-        currentSpeed = -mappedSpeed;
-        stepper.setSpeed(currentSpeed);
+        currentHorizontalSpeed = -mappedSpeed;
+        horizontalStepper.setSpeed(currentHorizontalSpeed);
       }
       else
       {
         // Hit a limit switch or trying to move into a limit
-        stepper.setSpeed(0);
-        currentSpeed = 0;
-        if ((currentX > 0 && !canMoveRight()) || (currentX < 0 && !canMoveLeft()))
-        {
-          // Only log limit hit occasionally to avoid spam
-          if (millis() - lastLogTime >= 1000)
-          {
-            Serial.println("Limit switch hit - movement blocked");
-          }
-        }
+        horizontalStepper.setSpeed(0);
+        currentHorizontalSpeed = 0;
       }
     }
     else
     {
-      stepper.setSpeed(0);
-      currentSpeed = 0;
+      horizontalStepper.setSpeed(0);
+      currentHorizontalSpeed = 0;
     }
 
-    stepper.runSpeed();
+    // Handle vertical movement (Y-axis)
+    if (fabs(currentY) > deadzone)
+    {
+      float normY = (fabs(currentY) - deadzone) / (1.0 - deadzone);
+      float exponent = 2.0;
+      float mappedSpeed = pow(normY, exponent) * maxStepsPerSec;
 
-    // Log the percent speed every 500ms to avoid flooding the serial monitor
+      // Check limit switches before setting speed
+      if (currentY > 0 && canMoveUp())
+      { // Moving up
+        currentVerticalSpeed = mappedSpeed;
+        verticalStepper.setSpeed(currentVerticalSpeed);
+      }
+      else if (currentY < 0 && canMoveDown())
+      { // Moving down
+        currentVerticalSpeed = -mappedSpeed;
+        verticalStepper.setSpeed(currentVerticalSpeed);
+      }
+      else
+      {
+        // Hit a limit switch or trying to move into a limit
+        verticalStepper.setSpeed(0);
+        currentVerticalSpeed = 0;
+      }
+    }
+    else
+    {
+      verticalStepper.setSpeed(0);
+      currentVerticalSpeed = 0;
+    }
+
+    // Run both steppers
+    horizontalStepper.runSpeed();
+    verticalStepper.runSpeed();
+
+    // Log the status every 500ms to avoid flooding the serial monitor
     unsigned long currentMillis = millis();
     if (currentMillis - lastLogTime >= 500)
     {
       lastLogTime = currentMillis;
-      float percentSpeed = (fabs(currentSpeed) / maxStepsPerSec) * 100.0;
-      Serial.printf("Motor speed: %.2f%% | Limits: L=%s R=%s | Pos: %ld | Trigger: %s\n",
-                    percentSpeed,
+      float horizontalPercentSpeed = (fabs(currentHorizontalSpeed) / maxStepsPerSec) * 100.0;
+      float verticalPercentSpeed = (fabs(currentVerticalSpeed) / maxStepsPerSec) * 100.0;
+      Serial.printf("Joy: X=%.3f Y=%.3f | H: %.1f%% V: %.1f%% | Limits: L=%s R=%s U=%s D=%s | H_Pos: %ld V_Pos: %ld | Trigger: %s | Cal: H=%s V=%s\n",
+                    currentX, currentY,
+                    horizontalPercentSpeed, verticalPercentSpeed,
                     leftLimitHit ? "HIT" : "OK",
                     rightLimitHit ? "HIT" : "OK",
-                    stepper.currentPosition(),
-                    triggerActive ? "ACTIVE" : "READY");
+                    upLimitHit ? "HIT" : "OK",
+                    downLimitHit ? "HIT" : "OK",
+                    horizontalStepper.currentPosition(),
+                    verticalStepper.currentPosition(),
+                    triggerActive ? "ACTIVE" : "READY",
+                    isHorizontalCalibrated ? "YES" : "NO",
+                    isVerticalCalibrated ? "YES" : "NO");
     }
 
     // Minimal delay to yield to other tasks
@@ -287,15 +450,21 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
       return;
     }
     if (doc.containsKey("x"))
+    {
       joystickX = doc["x"].as<float>();
+      Serial.printf("WebSocket X received: %.3f\n", joystickX);
+    }
     if (doc.containsKey("y"))
+    {
       joystickY = doc["y"].as<float>();
+      Serial.printf("WebSocket Y received: %.3f\n", joystickY);
+    }
 
     // Check for calibration command
     if (doc.containsKey("calibrate") && doc["calibrate"].as<bool>())
     {
       Serial.println("Calibration requested via WebSocket");
-      calibrateMotor();
+      calibrateMotors();
     }
 
     // Check for trigger commands
@@ -331,24 +500,42 @@ void setup()
   // Setup limit switch pins with internal pull-up resistors
   pinMode(LEFT_LIMIT_PIN, INPUT_PULLUP);
   pinMode(RIGHT_LIMIT_PIN, INPUT_PULLUP);
+  pinMode(UP_LIMIT_PIN, INPUT_PULLUP);
+  pinMode(DOWN_LIMIT_PIN, INPUT_PULLUP);
 
   // Attach interrupts for limit switches
   attachInterrupt(digitalPinToInterrupt(LEFT_LIMIT_PIN), leftLimitISR, CHANGE);
   attachInterrupt(digitalPinToInterrupt(RIGHT_LIMIT_PIN), rightLimitISR, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(UP_LIMIT_PIN), upLimitISR, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(DOWN_LIMIT_PIN), downLimitISR, CHANGE);
 
   // Initialize limit switch states
   leftLimitHit = digitalRead(LEFT_LIMIT_PIN) == LOW;
   rightLimitHit = digitalRead(RIGHT_LIMIT_PIN) == LOW;
+  upLimitHit = digitalRead(UP_LIMIT_PIN) == LOW;
+  downLimitHit = digitalRead(DOWN_LIMIT_PIN) == LOW;
 
-  Serial.printf("Initial limit switch states - Left: %s, Right: %s\n",
-                leftLimitHit ? "HIT" : "OK", rightLimitHit ? "HIT" : "OK");
+  Serial.printf("Initial limit switch states - Left: %s, Right: %s, Up: %s, Down: %s\n",
+                leftLimitHit ? "HIT" : "OK", rightLimitHit ? "HIT" : "OK",
+                upLimitHit ? "HIT" : "OK", downLimitHit ? "HIT" : "OK");
+
+  // Check for problematic vertical limit switch configuration
+  if (upLimitHit && downLimitHit)
+  {
+    Serial.println("WARNING: Both vertical limit switches are triggered!");
+    Serial.println("This may indicate a wiring issue or mechanical problem.");
+    Serial.println("Check your UP_LIMIT_PIN (34) and DOWN_LIMIT_PIN (35) connections.");
+  }
 
   // Initialize stepper settings
-  stepper.setMaxSpeed(maxStepsPerSec);
+  horizontalStepper.setMaxSpeed(maxStepsPerSec);
+  verticalStepper.setMaxSpeed(maxStepsPerSec);
 
   // Initialize servo motor for trigger
-  triggerServo.attach(SERVO_PIN);
-  triggerServo.write(SERVO_REST_ANGLE); // Set to rest position
+  triggerServo.setPeriodHertz(50);           // Standard 50Hz servo
+  triggerServo.attach(SERVO_PIN, 500, 2500); // Min/Max pulse width in microseconds
+  triggerServo.write(SERVO_REST_ANGLE);      // Set to rest position
+  delay(500);                                // Give servo time to reach position
   Serial.println("Trigger servo initialized at rest position");
 
   // Connect to WiFi

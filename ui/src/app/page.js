@@ -426,10 +426,7 @@ function App() {
                       </div>
                     )}
 
-                    {/* Muzzle Flash Effect */}
-                    {triggerActive && (
-                      <div className="absolute inset-0 bg-orange-300/20 animate-muzzleFlash pointer-events-none" />
-                    )}
+
 
                     {/* Recent Fire Indicator */}
                     {recentlyFired && !triggerActive && (

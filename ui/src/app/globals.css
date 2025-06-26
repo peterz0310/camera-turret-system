@@ -6,18 +6,8 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
-@keyframes muzzleFlash {
-  0% { opacity: 0; }
-  50% { opacity: 0.3; }
-  100% { opacity: 0; }
-}
-
 .animate-fadeIn {
   animation: fadeIn 0.3s ease-out;
-}
-
-.animate-muzzleFlash {
-  animation: muzzleFlash 0.15s ease-out;
 }
 
 /* Range slider styling */
