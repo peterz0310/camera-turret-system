@@ -40,8 +40,8 @@ REQUEST_TIMEOUT = 2.0
 RECONNECT_DELAY = 1.0 # How long to show static before retrying connection
 STATIC_FRAME_WIDTH = 640
 STATIC_FRAME_HEIGHT = 480
-STATIC_FRAME_COUNT = 20
-STATIC_FPS = 20 # Target FPS for the fallback animation
+STATIC_FRAME_COUNT = 10
+STATIC_FPS = 10 # Target FPS for the fallback animation (lowered for consistency)
 
 app = Flask(__name__)
 
@@ -188,18 +188,19 @@ def stream_generator():
             next_frame_time = time.time()
 
             while time.time() < reconnect_at:
-                # Use the pre-generated buffer
-                frame_to_send = STATIC_FRAME_BUFFER[frame_index]
-                yield format_mjpeg_frame(frame_to_send)
+                current_time = time.time()
                 
-                frame_index = (frame_index + 1) % len(STATIC_FRAME_BUFFER)
+                # Only send frame if we've reached the target time
+                if current_time >= next_frame_time:
+                    # Use the pre-generated buffer
+                    frame_to_send = STATIC_FRAME_BUFFER[frame_index]
+                    yield format_mjpeg_frame(frame_to_send)
+                    
+                    frame_index = (frame_index + 1) % len(STATIC_FRAME_BUFFER)
+                    next_frame_time += frame_duration
                 
-                # Calculate the exact time to wait for the next frame
-                next_frame_time += frame_duration
-                sleep_duration = next_frame_time - time.time()
-                
-                if sleep_duration > 0:
-                    time.sleep(sleep_duration)
+                # Small sleep to prevent busy waiting
+                time.sleep(0.01)
 
             print("Retrying camera connection...")
         except Exception as e:
