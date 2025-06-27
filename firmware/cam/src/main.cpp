@@ -138,61 +138,15 @@ void setup()
   {
     Serial.println("Configuring camera sensor settings...");
 
-    // Apply orientation settings - some sensors need multiple attempts
+    // Apply correct orientation settings - Mode 0 works for this camera
     Serial.println("Applying camera orientation settings...");
+    Serial.println("Using Mode 0: Normal orientation (no flip, no mirror)");
 
-    // Try different combinations to handle various sensor behaviors
-    bool orientation_applied = false;
+    s->set_vflip(s, 0);
+    s->set_hmirror(s, 0);
+    delay(100);
 
-    // First attempt: Standard flip settings (both vertical flip and horizontal mirror)
-    if (s->set_vflip(s, 1) == 0 && s->set_hmirror(s, 1) == 0)
-    {
-      delay(100); // Give sensor time to apply both settings
-      Serial.println("Applied vertical flip and horizontal mirror");
-      orientation_applied = true;
-    }
-    else
-    {
-      Serial.println("Combined flip settings failed, trying individual settings...");
-
-      // Reset any partial settings that might have been applied
-      s->set_vflip(s, 0);
-      s->set_hmirror(s, 0);
-      delay(100);
-
-      // Try just vertical flip
-      if (s->set_vflip(s, 1) == 0)
-      {
-        delay(50); // Give sensor time to apply setting
-        Serial.println("Applied vertical flip only");
-        orientation_applied = true;
-      }
-      else
-      {
-        // Reset vflip and try just horizontal mirror
-        s->set_vflip(s, 0);
-        delay(50);
-
-        if (s->set_hmirror(s, 1) == 0)
-        {
-          delay(50); // Give sensor time to apply setting
-          Serial.println("Applied horizontal mirror only");
-          orientation_applied = true;
-        }
-        else
-        {
-          Serial.println("No orientation settings worked, using sensor default");
-          s->set_vflip(s, 0);
-          s->set_hmirror(s, 0);
-          delay(50);
-        }
-      }
-    }
-
-    if (!orientation_applied)
-    {
-      Serial.println("Warning: Camera orientation settings may not be supported by this sensor");
-    }
+    Serial.println("Camera orientation configured successfully");
 
     // Give sensor time to apply settings
     delay(500);
