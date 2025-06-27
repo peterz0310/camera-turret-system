@@ -8,6 +8,8 @@ import io
 import random
 import cv2
 import numpy as np
+import threading
+from queue import Queue
 
 # AI imports (will be conditionally loaded)
 try:
@@ -52,9 +54,14 @@ class AIStreamProcessor:
     def __init__(self):
         self.enabled = False
         self.model = None
-        self.detection_fps = 5
+        self.detection_fps = 2  # Lowered for Pi 5 + YOLO performance
         self.latest_detections = []
         self.last_detection_time = 0
+        
+        # Threading for async AI processing
+        self.frame_queue = Queue(maxsize=2)  # Small queue to prevent backlog
+        self.processing_thread = None
+        self.should_stop = False
         
         if YOLO_AVAILABLE:
             try:
@@ -71,6 +78,57 @@ class AIStreamProcessor:
             self.last_detection_time = current_time
             return True
         return False
+    
+    def start_processing_thread(self):
+        """Start the async AI processing thread"""
+        if self.processing_thread is None or not self.processing_thread.is_alive():
+            self.should_stop = False
+            self.processing_thread = threading.Thread(target=self._process_frames_async, daemon=True)
+            self.processing_thread.start()
+            print("🤖 AI processing thread started")
+    
+    def stop_processing_thread(self):
+        """Stop the async AI processing thread"""
+        self.should_stop = True
+        if self.processing_thread and self.processing_thread.is_alive():
+            self.processing_thread.join(timeout=1.0)
+            print("🤖 AI processing thread stopped")
+    
+    def _process_frames_async(self):
+        """Background thread that processes frames for AI detection"""
+        while not self.should_stop:
+            try:
+                if not self.frame_queue.empty():
+                    frame_data = self.frame_queue.get(timeout=0.1)
+                    if frame_data is not None:
+                        self._run_detection(frame_data)
+                else:
+                    time.sleep(0.01)  # Small sleep when no frames
+            except Exception as e:
+                print(f"AI processing thread error: {e}")
+                time.sleep(0.1)
+    
+    def _run_detection(self, img):
+        """Run AI detection on a frame"""
+        try:
+            if self.should_process_frame() and self.model:
+                results = self.model(img, classes=[0], verbose=False)
+                new_detections = self.extract_detections(results[0])
+                self.latest_detections = new_detections
+                if len(new_detections) > 0:
+                    print(f"🎯 Detected {len(new_detections)} person(s)")
+        except Exception as e:
+            print(f"Detection error: {e}")
+    
+    def queue_frame_for_processing(self, img):
+        """Queue a frame for async AI processing (non-blocking)"""
+        if self.enabled and self.model:
+            try:
+                # Drop frame if queue is full (prevent backlog)
+                if not self.frame_queue.full():
+                    self.frame_queue.put(img, block=False)
+            except:
+                pass  # Queue full, drop frame
     
     def extract_detections(self, results):
         detections = []
@@ -101,23 +159,29 @@ class AIStreamProcessor:
         return img
     
     def process_frame(self, frame_bytes):
+        """Process frame in real-time (non-blocking)"""
         if not self.enabled or not self.model:
             return frame_bytes
+            
         try:
+            # Decode frame
             nparr = np.frombuffer(frame_bytes, np.uint8)
             img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             if img is None:
                 return frame_bytes
-            if self.should_process_frame():
-                results = self.model(img, classes=[0], verbose=False)
-                self.latest_detections = self.extract_detections(results[0])
-                if len(self.latest_detections) > 0:
-                    print(f"🎯 Detected {len(self.latest_detections)} person(s)")
+            
+            # Queue frame for async AI processing (non-blocking)
+            self.queue_frame_for_processing(img.copy())
+            
+            # Always draw latest detections (even if from previous frames)
             annotated_img = self.draw_detections(img, self.latest_detections)
+            
+            # Encode and return immediately
             _, buffer = cv2.imencode('.jpg', annotated_img, [cv2.IMWRITE_JPEG_QUALITY, 85])
             return buffer.tobytes()
+            
         except Exception as e:
-            print(f"AI processing error: {e}")
+            print(f"Frame processing error: {e}")
             return frame_bytes
 
 ai_processor = AIStreamProcessor()
@@ -246,6 +310,13 @@ def toggle_ai():
             }), 503
 
         ai_processor.enabled = bool(enabled)
+        
+        # Start or stop the processing thread based on state
+        if ai_processor.enabled and ai_processor.model:
+            ai_processor.start_processing_thread()
+        else:
+            ai_processor.stop_processing_thread()
+            
         status = "enabled" if ai_processor.enabled else "disabled"
         print(f"🤖 AI processing has been {status} via API")
         
@@ -278,5 +349,12 @@ if __name__ == "__main__":
     print(f"YOLO Available: {YOLO_AVAILABLE}")
     if YOLO_AVAILABLE:
         print("🤖 AI detection ready - toggle via the UI or /api/ai endpoint")
-    print("📹 Server starting on http://0.0.0.0:8081")
-    app.run(host="0.0.0.0", port=8081)
+        print("� Real-time streaming with async AI processing enabled")
+    print("�📹 Server starting on http://0.0.0.0:8081")
+    
+    try:
+        app.run(host="0.0.0.0", port=8081)
+    finally:
+        # Cleanup on shutdown
+        print("🛑 Shutting down AI processing...")
+        ai_processor.stop_processing_thread()
