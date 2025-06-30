@@ -45,6 +45,24 @@ const AIIcon = ({ className }) => (
   </svg>
 );
 
+const ModelIcon = ({ className }) => (
+  <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+    <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+  </svg>
+);
+
+const ChevronDownIcon = ({ className }) => (
+  <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+    <path d="M7.41 8.58L12 13.17l4.59-4.59L18 10l-6 6-6-6 1.41-1.42z"/>
+  </svg>
+);
+
+const FpsIcon = ({ className }) => (
+  <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm1-13h-2v6l5.25 3.15.75-1.23L13 12.25V7z"/>
+  </svg>
+);
+
 
 function App() {
   const [connected, setConnected] = useState(false);
@@ -60,12 +78,20 @@ function App() {
   const [triggerActive, setTriggerActive] = useState(false);
   const [lastFireTime, setLastFireTime] = useState(0);
   const [aiMode, setAiMode] = useState(false);
+  const [availableModels, setAvailableModels] = useState({});
+  const [currentModel, setCurrentModel] = useState('mobilenet');
+  const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
+  const [fpsInfo, setFpsInfo] = useState({});
+  const [fpsSliderOpen, setFpsSliderOpen] = useState(false);
 
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
   const reconnectAttemptsRef = useRef(0);
   const crosshairPanelRef = useRef(null);
   const triggerPanelRef = useRef(null);
+  const aiPanelRef = useRef(null);
+  const fpsSliderRef = useRef(null);
 
   // --- WEBSOCKET LOGIC ---
   const connectWebSocket = () => {
@@ -119,13 +145,39 @@ function App() {
     // Set the stream URL once on initial load. It won't be changed again unless retried.
     setStreamUrl(`${CAMERA_STREAM_URL}?t=${Date.now()}`);
     connectWebSocket();
+    fetchAvailableModels();
     return () => disconnectWebSocket();
   }, []);
+
+  // Fetch available AI models on load
+  const fetchAvailableModels = async () => {
+    try {
+      const response = await fetch(`${API_URL}/models`);
+      const data = await response.json();
+      if (response.ok) {
+        setAvailableModels(data.available_models);
+        setCurrentModel(data.current_model);
+        setAiMode(data.ai_enabled);
+        setFpsInfo(data.fps_info || {});
+        setModelsLoaded(true);
+        console.log('📋 [AI] Available models loaded:', data.available_models);
+        console.log('🎯 [AI] FPS info loaded:', data.fps_info);
+      }
+    } catch (error) {
+      console.error('❌ [AI] Failed to fetch models:', error);
+    }
+  };
 
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (crosshairPanelRef.current && !crosshairPanelRef.current.contains(event.target)) {
         setCrosshairPanelOpen(false);
+      }
+      if (aiPanelRef.current && !aiPanelRef.current.contains(event.target)) {
+        setAiPanelOpen(false);
+      }
+      if (fpsSliderRef.current && !fpsSliderRef.current.contains(event.target)) {
+        setFpsSliderOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -155,6 +207,15 @@ function App() {
         case 'a':
           event.preventDefault();
           handleAIToggle();
+          break;
+        case '1':
+        case '2':
+          event.preventDefault();
+          const modelKeys = Object.keys(availableModels);
+          const modelIndex = parseInt(event.key) - 1;
+          if (modelKeys[modelIndex]) {
+            handleModelSwitch(modelKeys[modelIndex]);
+          }
           break;
       }
     };
@@ -241,7 +302,7 @@ function App() {
       const response = await fetch(`${API_URL}/ai`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: newAiMode })
+        body: JSON.stringify({ enabled: newAiMode, model: currentModel })
       });
       
       const data = await response.json();
@@ -249,7 +310,8 @@ function App() {
       if (response.ok && data.success) {
         // Set state from the authoritative server response
         setAiMode(data.ai_enabled);
-        console.log(`✅ [AI] Mode successfully set to: ${data.ai_enabled ? 'ENABLED' : 'DISABLED'}`);
+        setCurrentModel(data.current_model);
+        console.log(`✅ [AI] Mode successfully set to: ${data.ai_enabled ? 'ENABLED' : 'DISABLED'} with model: ${data.current_model}`);
       } else {
         console.error('❌ [AI] Failed to toggle AI mode:', data.message || response.status);
         // Optional: Add UI feedback for the user that the toggle failed.
@@ -257,6 +319,63 @@ function App() {
     } catch (error) {
       console.error('❌ [AI] Network error while toggling AI mode:', error);
        // Optional: Add UI feedback for the user that the toggle failed.
+    }
+  };
+
+  // Handle model switching
+  const handleModelSwitch = async (modelName) => {
+    if (modelName === currentModel) return;
+    
+    console.log(`🔄 [AI] Switching to model: ${modelName}`);
+    try {
+      const response = await fetch(`${API_URL}/ai`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: aiMode, model: modelName })
+      });
+      
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        setCurrentModel(data.current_model);
+        setAiMode(data.ai_enabled);
+        setAiPanelOpen(false);
+        console.log(`✅ [AI] Successfully switched to: ${data.current_model}`);
+      } else {
+        console.error('❌ [AI] Failed to switch model:', data.message || response.status);
+      }
+    } catch (error) {
+      console.error('❌ [AI] Network error while switching model:', error);
+    }
+  };
+
+  // Handle FPS changes
+  const handleFpsChange = async (modelName, newFps) => {
+    try {
+      const response = await fetch(`${API_URL}/fps`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: modelName, fps: parseFloat(newFps) })
+      });
+      
+      const data = await response.json();
+      
+      if (response.ok && data.success) {
+        setFpsInfo(data.fps_info);
+        console.log(`🎯 [AI] FPS updated for ${modelName}: ${data.fps}`);
+      } else {
+        console.error('❌ [AI] Failed to update FPS:', data.error);
+      }
+    } catch (error) {
+      console.error('❌ [AI] Network error updating FPS:', error);
+    }
+  };
+
+  // Reset FPS to default for a model
+  const handleResetFps = async (modelName) => {
+    const modelInfo = availableModels[modelName];
+    if (modelInfo) {
+      await handleFpsChange(modelName, modelInfo.default_fps);
     }
   };
 
@@ -346,14 +465,128 @@ function App() {
           <span>Calibrate</span>
         </button>
 
-        {/* AI Detection Toggle */}
-        <button
-          onClick={handleAIToggle}
-          className={`${controlButtonClass} ${aiMode ? 'border-green-400/50 text-green-400 hover:bg-green-400/20 hover:text-green-300' : 'hover:border-purple-400/50 hover:text-purple-300'}`}
-        >
-          <AIIcon className="w-5 h-5" />
-          <span>{aiMode ? 'AI ACTIVE' : 'AI STANDBY'}</span>
-        </button>
+        {/* AI Detection Controls */}
+        <div className="flex flex-col gap-2 pointer-events-auto">
+          <button
+            onClick={handleAIToggle}
+            className={`${controlButtonClass} ${aiMode ? 'border-green-400/50 text-green-400 hover:bg-green-400/20 hover:text-green-300' : 'hover:border-purple-400/50 hover:text-purple-300'}`}
+          >
+            <AIIcon className="w-5 h-5" />
+            <span>{aiMode ? 'AI ACTIVE' : 'AI STANDBY'}</span>
+          </button>
+
+          {/* AI Model Selector */}
+          {modelsLoaded && Object.keys(availableModels).length > 0 && (
+            <div className="relative" ref={aiPanelRef}>
+              <button
+                onClick={() => setAiPanelOpen(!aiPanelOpen)}
+                className={`${controlButtonClass} justify-between w-full`}
+              >
+                <div className="flex items-center gap-2">
+                  <ModelIcon className="w-4 h-4" />
+                  <span>{availableModels[currentModel]?.name || currentModel}</span>
+                </div>
+                <ChevronDownIcon className={`w-4 h-4 transition-transform ${aiPanelOpen ? 'rotate-180' : ''}`} />
+              </button>
+
+              {aiPanelOpen && (
+                <div className="absolute top-full left-0 mt-1 w-full bg-gray-800/95 backdrop-blur-sm border border-cyan-400/30 rounded-sm shadow-lg z-50">
+                  <div className="p-1">
+                    {Object.entries(availableModels).map(([modelKey, modelInfo]) => (
+                      <button
+                        key={modelKey}
+                        onClick={() => handleModelSwitch(modelKey)}
+                        className={`w-full px-3 py-2 text-left transition-colors duration-200 text-xs font-mono cursor-pointer rounded-sm ${
+                          modelKey === currentModel
+                            ? 'bg-cyan-600 text-white'
+                            : 'bg-transparent hover:bg-gray-600/70 text-gray-300 hover:text-white'
+                        }`}
+                      >
+                        <div className="flex flex-col gap-1">
+                          <div className="flex items-center justify-between">
+                            <span className="font-semibold uppercase tracking-wider">{modelInfo.name}</span>
+                            <span className="text-xs opacity-70">
+                              {fpsInfo[modelKey]?.current_fps?.toFixed(1) || modelInfo.current_fps?.toFixed(1) || modelInfo.default_fps} FPS
+                            </span>
+                          </div>
+                          <span className="text-xs opacity-80">{modelInfo.description}</span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* FPS Control Panel */}
+          {modelsLoaded && Object.keys(availableModels).length > 0 && (
+            <div className="relative" ref={fpsSliderRef}>
+              <button
+                onClick={() => setFpsSliderOpen(!fpsSliderOpen)}
+                className={`${controlButtonClass} justify-between w-full`}
+              >
+                <div className="flex items-center gap-2">
+                  <FpsIcon className="w-4 h-4" />
+                  <span>FPS CONTROL</span>
+                </div>
+                <ChevronDownIcon className={`w-4 h-4 transition-transform ${fpsSliderOpen ? 'rotate-180' : ''}`} />
+              </button>
+
+              {fpsSliderOpen && (
+                <div className="absolute top-full left-0 mt-1 w-full bg-gray-800/95 backdrop-blur-sm border border-cyan-400/30 rounded-sm shadow-lg z-50">
+                  <div className="p-3 space-y-4">
+                    {Object.entries(availableModels).map(([modelKey, modelInfo]) => {
+                      const currentFps = fpsInfo[modelKey]?.current_fps || modelInfo.current_fps || modelInfo.default_fps;
+                      const isActive = modelKey === currentModel;
+                      
+                      return (
+                        <div key={modelKey} className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className={`text-xs font-mono uppercase tracking-wider ${isActive ? 'text-cyan-400' : 'text-gray-400'}`}>
+                              {modelInfo.name}
+                            </span>
+                            <div className="flex items-center gap-2">
+                              <span className={`text-xs font-mono ${isActive ? 'text-cyan-400' : 'text-gray-400'}`}>
+                                {typeof currentFps === 'number' ? currentFps.toFixed(1) : currentFps} FPS
+                              </span>
+                              <button
+                                onClick={() => handleResetFps(modelKey)}
+                                className="text-xs px-2 py-1 border border-gray-600 hover:border-cyan-400 text-gray-400 hover:text-cyan-400 rounded transition-colors"
+                                title="Reset to default"
+                              >
+                                RESET
+                              </button>
+                            </div>
+                          </div>
+                          
+                          <div className="space-y-1">
+                            <input
+                              type="range"
+                              min={modelInfo.min_fps}
+                              max={modelInfo.max_fps}
+                              step="0.1"
+                              value={currentFps}
+                              onChange={(e) => handleFpsChange(modelKey, e.target.value)}
+                              className={`w-full h-2 rounded-lg appearance-none cursor-pointer ${
+                                isActive ? 'accent-cyan-400' : 'accent-gray-500'
+                              }`}
+                            />
+                            <div className="flex justify-between text-xs text-gray-500 font-mono">
+                              <span>{modelInfo.min_fps}</span>
+                              <span>DEFAULT: {modelInfo.default_fps}</span>
+                              <span>{modelInfo.max_fps}</span>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
         {/* Fire Control Panel */}
         <div className="flex flex-col gap-2 pointer-events-auto">
@@ -405,20 +638,27 @@ function App() {
               <div><span className="text-cyan-300">B/V:</span> Burst Fire</div>
               <div><span className="text-cyan-300">C:</span> Calibrate</div>
               <div><span className="text-cyan-300">A:</span> Toggle AI</div>
+              {Object.keys(availableModels).length > 0 && (
+                <>
+                  <div><span className="text-cyan-300">1:</span> MobileNet Model</div>
+                  <div><span className="text-cyan-300">2:</span> YOLO Model</div>
+                </>
+              )}
             </div>
           </div>
         )}
 
         {/* AI Status Panel */}
-        {aiMode && (
+        {aiMode && modelsLoaded && (
           <div className="bg-black/40 border border-green-500/30 px-3 py-2 rounded-sm backdrop-blur-sm">
             <h4 className="text-xs uppercase font-mono tracking-wider text-green-400 mb-1">AI Detection</h4>
             <div className="text-xs font-mono text-gray-400 space-y-0.5">
               <div className="flex items-center gap-2">
                 <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
-                <span className="text-green-300">YOLO v8n Active</span>
+                <span className="text-green-300">{availableModels[currentModel]?.name || currentModel} Active</span>
               </div>
-              <div><span className="text-green-300">Model:</span> Person Detection</div>
+              <div><span className="text-green-300">Target FPS:</span> {availableModels[currentModel]?.fps || 'N/A'}</div>
+              <div className="text-xs opacity-70">{availableModels[currentModel]?.description || 'Person Detection'}</div>
             </div>
           </div>
         )}

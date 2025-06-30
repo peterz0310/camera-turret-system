@@ -29,10 +29,19 @@ ESP32_CAM_URL=http://192.168.4.62/stream
 
 ## AI Features
 
-The AI detection uses YOLOv8n (nano) model for efficient person detection:
-- **Detection Rate**: 5 FPS (configurable)
+The AI detection system supports multiple models with MobileNet-SSD as the default:
+
+### Default Model: MobileNet-SSD
+- **Detection Rate**: 15 FPS (configurable)
 - **Stream Rate**: Full camera framerate (15-30 FPS)
-- **Model**: YOLOv8n (downloads automatically on first run)
+- **Model**: MobileNet-SSD v2 (downloads automatically on first run)
+- **Classes**: Person detection only
+- **Confidence**: 50% threshold
+- **Description**: Fast inference, good balance of speed and accuracy
+
+### Alternative Model: YOLOv8n
+- **Detection Rate**: 4 FPS (configurable) 
+- **Model**: YOLOv8n (nano) - High accuracy, optimized input size
 - **Classes**: Person detection only
 - **Confidence**: 50% threshold
 
