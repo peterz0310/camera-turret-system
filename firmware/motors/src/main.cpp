@@ -27,6 +27,7 @@ const int microstepFactor = 2;
 const int baseMaxStepsPerSec = 1000;
 const int maxStepsPerSec = baseMaxStepsPerSec * microstepFactor;
 const float deadzone = 0.1;
+const float speedExponent = 1.0; // Control speed curve: 1.0 = linear, 2.0 = exponential
 
 // Angular motion settings - configurable gear ratios and motor specs
 const float HORIZONTAL_GEAR_RATIO = 8.0;  // 8:1 gear ratio for yaw
@@ -80,6 +81,14 @@ long downLimitPosition = 0;
 // Global joystick values (updated via WebSocket)
 volatile float joystickX = 0.0;
 volatile float joystickY = 0.0;
+
+// Calibration control flag
+volatile bool calibrationInProgress = false;
+
+// Movement mode control - prevents conflicts between joystick and angular positioning
+volatile bool angularMovementInProgress = false;
+unsigned long angularMovementStartTime = 0;
+const unsigned long ANGULAR_MOVEMENT_TIMEOUT = 10000; // 10 seconds max for angular moves
 
 // Create AccelStepper instances
 AccelStepper horizontalStepper(AccelStepper::DRIVER, H_STEP_PIN, H_DIR_PIN);
@@ -229,6 +238,22 @@ void updateBurstFire()
 void calibrateHorizontalMotor()
 {
   Serial.println("Starting horizontal motor calibration...");
+  Serial.printf("Initial limit states - Left: %s, Right: %s\n",
+                leftLimitHit ? "HIT" : "OK", rightLimitHit ? "HIT" : "OK");
+
+  // If we're already at left limit, move away first
+  if (leftLimitHit)
+  {
+    Serial.println("Already at left limit, moving away...");
+    horizontalStepper.setSpeed(maxStepsPerSec * 0.2);
+    while (leftLimitHit)
+    {
+      horizontalStepper.runSpeed();
+      delay(1);
+    }
+    horizontalStepper.setSpeed(0);
+    delay(100);
+  }
 
   // Move left until limit switch is hit
   Serial.println("Moving to left limit...");
@@ -247,6 +272,20 @@ void calibrateHorizontalMotor()
   while (horizontalStepper.distanceToGo() != 0)
   {
     horizontalStepper.run();
+  }
+
+  // If we're already at right limit, move away first
+  if (rightLimitHit)
+  {
+    Serial.println("Already at right limit, moving away...");
+    horizontalStepper.setSpeed(-maxStepsPerSec * 0.2);
+    while (rightLimitHit)
+    {
+      horizontalStepper.runSpeed();
+      delay(1);
+    }
+    horizontalStepper.setSpeed(0);
+    delay(100);
   }
 
   // Move right until limit switch is hit
@@ -279,6 +318,22 @@ void calibrateHorizontalMotor()
 void calibrateVerticalMotor()
 {
   Serial.println("Starting vertical motor calibration...");
+  Serial.printf("Initial limit states - Up: %s, Down: %s\n",
+                upLimitHit ? "HIT" : "OK", downLimitHit ? "HIT" : "OK");
+
+  // If we're already at down limit, move away first
+  if (downLimitHit)
+  {
+    Serial.println("Already at down limit, moving away...");
+    verticalStepper.setSpeed(maxStepsPerSec * 0.2);
+    while (downLimitHit)
+    {
+      verticalStepper.runSpeed();
+      delay(1);
+    }
+    verticalStepper.setSpeed(0);
+    delay(100);
+  }
 
   // Move down until limit switch is hit
   Serial.println("Moving to down limit...");
@@ -297,6 +352,20 @@ void calibrateVerticalMotor()
   while (verticalStepper.distanceToGo() != 0)
   {
     verticalStepper.run();
+  }
+
+  // If we're already at up limit, move away first
+  if (upLimitHit)
+  {
+    Serial.println("Already at up limit, moving away...");
+    verticalStepper.setSpeed(-maxStepsPerSec * 0.2);
+    while (upLimitHit)
+    {
+      verticalStepper.runSpeed();
+      delay(1);
+    }
+    verticalStepper.setSpeed(0);
+    delay(100);
   }
 
   // Move up until limit switch is hit
@@ -328,6 +397,10 @@ void calibrateVerticalMotor()
 
 void calibrateMotors()
 {
+  Serial.println("Starting motor calibration - pausing motor task...");
+  calibrationInProgress = true;
+  delay(100); // Give motor task time to pause
+
   calibrateHorizontalMotor();
   calibrateVerticalMotor();
 
@@ -336,7 +409,8 @@ void calibrateMotors()
   verticalCenterPosition = (downLimitPosition + upLimitPosition) / 2;
   angularPositioningEnabled = true;
 
-  Serial.println("All motors calibrated!");
+  calibrationInProgress = false; // Resume motor task
+  Serial.println("All motors calibrated! Motor task resumed.");
   Serial.printf("Angular positioning enabled - Center positions: H=%ld, V=%ld\n",
                 horizontalCenterPosition, verticalCenterPosition);
   Serial.printf("Steps per degree - Horizontal: %.2f, Vertical: %.2f\n",
@@ -398,6 +472,10 @@ bool moveToAbsoluteAngle(float horizontalDegrees, float verticalDegrees)
   Serial.printf("Moving to absolute angles: H=%.2f° V=%.2f° (positions: H=%ld V=%ld)\n",
                 horizontalDegrees, verticalDegrees, targetHorizontalPosition, targetVerticalPosition);
 
+  // Set angular movement mode to prevent joystick interference
+  angularMovementInProgress = true;
+  angularMovementStartTime = millis();
+
   horizontalStepper.moveTo(targetHorizontalPosition);
   verticalStepper.moveTo(targetVerticalPosition);
 
@@ -435,6 +513,10 @@ bool moveByRelativeAngle(float horizontalDegrees, float verticalDegrees)
 
   Serial.printf("Moving by relative angles: H=%.2f° V=%.2f° (steps: H=%ld V=%ld)\n",
                 horizontalDegrees, verticalDegrees, horizontalSteps, verticalSteps);
+
+  // Set angular movement mode to prevent joystick interference
+  angularMovementInProgress = true;
+  angularMovementStartTime = millis();
 
   horizontalStepper.move(horizontalSteps);
   verticalStepper.move(verticalSteps);
@@ -477,12 +559,63 @@ void motorTask(void *parameter)
 
   for (;;)
   {
+    // Pause motor task during calibration
+    if (calibrationInProgress)
+    {
+      vTaskDelay(50 / portTICK_PERIOD_MS); // Wait 50ms and check again
+      continue;
+    }
+
     // Handle burst fire timing
     updateBurstFire();
 
     // Handle non-blocking trigger control
     updateTrigger();
 
+    // Check if angular movement is in progress
+    if (angularMovementInProgress)
+    {
+      // Check for timeout to prevent getting stuck
+      unsigned long currentTime = millis();
+      if (currentTime - angularMovementStartTime > ANGULAR_MOVEMENT_TIMEOUT)
+      {
+        Serial.println("Angular movement timeout - resuming joystick control");
+        angularMovementInProgress = false;
+      }
+      else
+      {
+        // Check if both motors have reached their targets
+        bool horizontalReached = (horizontalStepper.distanceToGo() == 0);
+        bool verticalReached = (verticalStepper.distanceToGo() == 0);
+
+        if (horizontalReached && verticalReached)
+        {
+          Serial.println("Angular movement complete - resuming joystick control");
+          angularMovementInProgress = false;
+        }
+        else
+        {
+          // Continue angular movement - use run() instead of runSpeed()
+          horizontalStepper.run();
+          verticalStepper.run();
+
+          // Log progress every 500ms
+          if (currentTime - lastLogTime >= 500)
+          {
+            lastLogTime = currentTime;
+            Serial.printf("Angular move in progress - H_target: %ld (current: %ld, remaining: %ld) | V_target: %ld (current: %ld, remaining: %ld)\n",
+                          horizontalStepper.targetPosition(), horizontalStepper.currentPosition(), horizontalStepper.distanceToGo(),
+                          verticalStepper.targetPosition(), verticalStepper.currentPosition(), verticalStepper.distanceToGo());
+          }
+
+          // Skip joystick processing while angular movement is active
+          vTaskDelay(1 / portTICK_PERIOD_MS);
+          continue;
+        }
+      }
+    }
+
+    // Normal joystick control mode (only when not in angular movement)
     float currentX = joystickX;
     float currentY = joystickY;
     float currentHorizontalSpeed = 0.0;
@@ -492,8 +625,7 @@ void motorTask(void *parameter)
     if (fabs(currentX) > deadzone)
     {
       float normX = (fabs(currentX) - deadzone) / (1.0 - deadzone);
-      float exponent = 2.0;
-      float mappedSpeed = pow(normX, exponent) * maxStepsPerSec;
+      float mappedSpeed = pow(normX, speedExponent) * maxStepsPerSec;
 
       // Check limit switches before setting speed
       if (currentX > 0 && canMoveRight())
@@ -523,8 +655,7 @@ void motorTask(void *parameter)
     if (fabs(currentY) > deadzone)
     {
       float normY = (fabs(currentY) - deadzone) / (1.0 - deadzone);
-      float exponent = 2.0;
-      float mappedSpeed = pow(normY, exponent) * maxStepsPerSec;
+      float mappedSpeed = pow(normY, speedExponent) * maxStepsPerSec;
 
       // Check limit switches before setting speed
       if (currentY > 0 && canMoveUp())
@@ -550,7 +681,7 @@ void motorTask(void *parameter)
       currentVerticalSpeed = 0;
     }
 
-    // Run both steppers
+    // Run both steppers using runSpeed() for joystick control
     horizontalStepper.runSpeed();
     verticalStepper.runSpeed();
 
@@ -561,7 +692,7 @@ void motorTask(void *parameter)
       lastLogTime = currentMillis;
       float horizontalPercentSpeed = (fabs(currentHorizontalSpeed) / maxStepsPerSec) * 100.0;
       float verticalPercentSpeed = (fabs(currentVerticalSpeed) / maxStepsPerSec) * 100.0;
-      Serial.printf("Joy: X=%.3f Y=%.3f | H: %.1f%% V: %.1f%% | Limits: L=%s R=%s U=%s D=%s | H_Pos: %ld V_Pos: %ld | Trigger: %s | Cal: H=%s V=%s\n",
+      Serial.printf("Joy: X=%.3f Y=%.3f | H: %.1f%% V: %.1f%% | Limits: L=%s R=%s U=%s D=%s | H_Pos: %ld V_Pos: %ld | Trigger: %s | Cal: H=%s V=%s | Mode: %s\n",
                     currentX, currentY,
                     horizontalPercentSpeed, verticalPercentSpeed,
                     leftLimitHit ? "HIT" : "OK",
@@ -572,7 +703,8 @@ void motorTask(void *parameter)
                     verticalStepper.currentPosition(),
                     triggerActive ? "ACTIVE" : "READY",
                     isHorizontalCalibrated ? "YES" : "NO",
-                    isVerticalCalibrated ? "YES" : "NO");
+                    isVerticalCalibrated ? "YES" : "NO",
+                    angularMovementInProgress ? "ANGULAR" : "JOYSTICK");
     }
 
     // Minimal delay to yield to other tasks
@@ -605,11 +737,25 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
     {
       joystickX = doc["x"].as<float>();
       Serial.printf("WebSocket X received: %.3f\n", joystickX);
+
+      // Cancel angular movement if significant joystick input is detected
+      if (angularMovementInProgress && fabs(joystickX) > deadzone)
+      {
+        Serial.println("Joystick input detected - cancelling angular movement");
+        cancelAngularMovement();
+      }
     }
     if (doc.containsKey("y"))
     {
       joystickY = doc["y"].as<float>();
       Serial.printf("WebSocket Y received: %.3f\n", joystickY);
+
+      // Cancel angular movement if significant joystick input is detected
+      if (angularMovementInProgress && fabs(joystickY) > deadzone)
+      {
+        Serial.println("Joystick input detected - cancelling angular movement");
+        cancelAngularMovement();
+      }
     }
 
     // Check for calibration command
@@ -657,6 +803,12 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
       moveToCenter();
     }
 
+    // Check for cancel angular movement command
+    if (doc.containsKey("cancelAngularMovement") && doc["cancelAngularMovement"].as<bool>())
+    {
+      cancelAngularMovement();
+    }
+
     if (doc.containsKey("getCurrentAngles") && doc["getCurrentAngles"].as<bool>())
     {
       float horizontalAngle, verticalAngle;
@@ -672,7 +824,7 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
 
       String responseStr;
       serializeJson(response, responseStr);
-      server.textAll(responseStr);
+      server->textAll(responseStr);
 
       Serial.printf("Current angles - H: %.2f°, V: %.2f°\n", horizontalAngle, verticalAngle);
     }
@@ -763,10 +915,29 @@ void setup()
   Serial.println("  - {\"calibrate\": true} - Calibrate motor limits");
   Serial.println("  - {\"fire\": \"single\"} - Fire single shot");
   Serial.println("  - {\"fire\": \"burst\"} - Fire 3-shot burst");
-  Serial.println("  - {\"x\": 0.5, \"y\": 0.0} - Control turret movement");
+  Serial.println("  - {\"x\": 0.5, \"y\": 0.0} - Control turret movement (joystick mode)");
+  Serial.println("  - {\"moveToAngle\": {\"horizontal\": 45.0, \"vertical\": -10.0}} - Move to absolute angles");
+  Serial.println("  - {\"moveByAngle\": {\"horizontal\": 5.0, \"vertical\": 2.0}} - Move by relative angles");
+  Serial.println("  - {\"moveToCenter\": true} - Move to center position (0°, 0°)");
+  Serial.println("  - {\"cancelAngularMovement\": true} - Cancel ongoing angular movement");
+  Serial.println("  - {\"getCurrentAngles\": true} - Get current turret angles");
+  Serial.println("Note: Joystick input automatically cancels angular movement for safety");
 }
 
 void loop()
 {
   yield();
+}
+
+void cancelAngularMovement()
+{
+  if (angularMovementInProgress)
+  {
+    Serial.println("Cancelling angular movement - resuming joystick control");
+    angularMovementInProgress = false;
+
+    // Stop both motors
+    horizontalStepper.setSpeed(0);
+    verticalStepper.setSpeed(0);
+  }
 }
