@@ -690,83 +690,79 @@ function App() {
           )}
         </div>
 
-        {/* AI Detection Controls */}
-        <div className="flex flex-col gap-2 pointer-events-auto">
+        {/* AI Detection Controls - Combined Menu */}
+        <div className="relative pointer-events-auto" ref={aiPanelRef}>
           <button
-            onClick={handleAIToggle}
-            className={`${controlButtonClass} ${aiMode ? 'border-green-400/50 text-green-400 hover:bg-green-400/20 hover:text-green-300' : 'hover:border-purple-400/50 hover:text-purple-300'}`}
+            onClick={() => setAiPanelOpen(!aiPanelOpen)}
+            className={`${controlButtonClass} justify-between w-full ${aiMode ? 'border-green-400/50 text-green-400 hover:bg-green-400/20 hover:text-green-300' : 'hover:border-purple-400/50 hover:text-purple-300'}`}
           >
-            <Brain className="w-5 h-5" />
-            <span>{aiMode ? 'AI ACTIVE' : 'AI STANDBY'}</span>
+            <div className="flex items-center gap-2">
+              <Brain className="w-5 h-5" />
+              <span>{aiMode ? 'AI ACTIVE' : 'AI STANDBY'}</span>
+            </div>
+            <ChevronDown className={`w-4 h-4 transition-transform ${aiPanelOpen ? 'rotate-180' : ''}`} />
           </button>
 
-          {/* AI Model Selector */}
-          {modelsLoaded && Object.keys(availableModels).length > 0 && (
-            <div className="relative" ref={aiPanelRef}>
-              <button
-                onClick={() => setAiPanelOpen(!aiPanelOpen)}
-                className={`${controlButtonClass} justify-between w-full`}
-              >
-                <div className="flex items-center gap-2">
-                  <Cpu className="w-4 h-4" />
-                  <span>{availableModels[currentModel]?.name || currentModel}</span>
+          {aiPanelOpen && (
+            <div className="absolute bottom-full left-0 mb-3 bg-black/70 border border-cyan-500/30 rounded-md p-4 w-80 shadow-2xl backdrop-blur-md animate-fadeIn">
+              <div className="space-y-4">
+                <h3 className="text-sm font-bold text-cyan-400 mb-2 uppercase tracking-wider">AI Detection System</h3>
+                
+                {/* AI Toggle */}
+                <div className="flex items-center justify-between p-3 bg-gray-800/50 rounded border border-gray-600">
+                  <span className="text-sm font-mono">AI Detection</span>
+                  <button
+                    onClick={handleAIToggle}
+                    className={`px-3 py-1 rounded text-xs font-mono transition-colors ${
+                      aiMode 
+                        ? 'bg-green-600 text-white hover:bg-green-700' 
+                        : 'bg-gray-600 text-gray-300 hover:bg-gray-500'
+                    }`}
+                  >
+                    {aiMode ? 'ENABLED' : 'DISABLED'}
+                  </button>
                 </div>
-                <ChevronDown className={`w-4 h-4 transition-transform ${aiPanelOpen ? 'rotate-180' : ''}`} />
-              </button>
 
-              {aiPanelOpen && (
-                <div className="absolute top-full left-0 mt-1 w-full bg-gray-800/95 backdrop-blur-sm border border-cyan-400/30 rounded-sm shadow-lg z-50">
-                  <div className="p-1">
-                    {Object.entries(availableModels).map(([modelKey, modelInfo]) => (
-                      <button
-                        key={modelKey}
-                        onClick={() => handleModelSwitch(modelKey)}
-                        className={`w-full px-3 py-2 text-left transition-colors duration-200 text-xs font-mono cursor-pointer rounded-sm ${
-                          modelKey === currentModel
-                            ? 'bg-cyan-600 text-white'
-                            : 'bg-transparent hover:bg-gray-600/70 text-gray-300 hover:text-white'
-                        }`}
-                      >
-                        <div className="flex flex-col gap-1">
-                          <div className="flex items-center justify-between">
-                            <span className="font-semibold uppercase tracking-wider">{modelInfo.name}</span>
-                            <span className="text-xs opacity-70">
-                              {fpsInfo[modelKey]?.current_fps?.toFixed(1) || modelInfo.current_fps?.toFixed(1) || modelInfo.default_fps} FPS
-                            </span>
+                {/* Model Selection */}
+                {modelsLoaded && Object.keys(availableModels).length > 0 && (
+                  <div className="space-y-2">
+                    <label className="block text-xs text-cyan-400 uppercase tracking-wider">Detection Model</label>
+                    <div className="space-y-1">
+                      {Object.entries(availableModels).map(([modelKey, modelInfo]) => (
+                        <button
+                          key={modelKey}
+                          onClick={() => handleModelSwitch(modelKey)}
+                          className={`w-full px-3 py-2 text-left transition-colors duration-200 text-xs font-mono cursor-pointer rounded ${
+                            modelKey === currentModel
+                              ? 'bg-cyan-600 text-white'
+                              : 'bg-gray-700 hover:bg-gray-600 text-gray-300'
+                          }`}
+                        >
+                          <div className="flex flex-col gap-1">
+                            <div className="flex items-center justify-between">
+                              <span className="font-semibold uppercase tracking-wider">{modelInfo.name}</span>
+                              <span className="text-xs opacity-70">
+                                {fpsInfo[modelKey]?.current_fps?.toFixed(1) || modelInfo.current_fps?.toFixed(1) || modelInfo.default_fps} FPS
+                              </span>
+                            </div>
+                            <span className="text-xs opacity-80">{modelInfo.description}</span>
                           </div>
-                          <span className="text-xs opacity-80">{modelInfo.description}</span>
-                        </div>
-                      </button>
-                    ))}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              )}
-            </div>
-          )}
+                )}
 
-          {/* FPS Control Panel */}
-          {modelsLoaded && Object.keys(availableModels).length > 0 && (
-            <div className="relative" ref={fpsSliderRef}>
-              <button
-                onClick={() => setFpsSliderOpen(!fpsSliderOpen)}
-                className={`${controlButtonClass} justify-between w-full`}
-              >
-                <div className="flex items-center gap-2">
-                  <Timer className="w-4 h-4" />
-                  <span>FPS CONTROL</span>
-                </div>
-                <ChevronDown className={`w-4 h-4 transition-transform ${fpsSliderOpen ? 'rotate-180' : ''}`} />
-              </button>
-
-              {fpsSliderOpen && (
-                <div className="absolute top-full left-0 mt-1 w-full bg-gray-800/95 backdrop-blur-sm border border-cyan-400/30 rounded-sm shadow-lg z-50">
-                  <div className="p-3 space-y-4">
+                {/* FPS Controls */}
+                {modelsLoaded && Object.keys(availableModels).length > 0 && (
+                  <div className="border-t border-gray-600 pt-3 space-y-3">
+                    <label className="block text-xs text-cyan-400 uppercase tracking-wider">Frame Rate Control</label>
                     {Object.entries(availableModels).map(([modelKey, modelInfo]) => {
                       const currentFps = fpsInfo[modelKey]?.current_fps || modelInfo.current_fps || modelInfo.default_fps;
                       const isActive = modelKey === currentModel;
                       
                       return (
-                        <div key={modelKey} className="space-y-2">
+                        <div key={modelKey} className={`space-y-2 p-2 rounded ${isActive ? 'bg-cyan-900/30 border border-cyan-600/30' : 'bg-gray-800/30'}`}>
                           <div className="flex items-center justify-between">
                             <span className={`text-xs font-mono uppercase tracking-wider ${isActive ? 'text-cyan-400' : 'text-gray-400'}`}>
                               {modelInfo.name}
@@ -807,8 +803,8 @@ function App() {
                       );
                     })}
                   </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -875,7 +871,41 @@ function App() {
           </div>
         )}
 
-        {/* Motor Settings Panel */}
+        {/* AI Status Panel */}
+        {aiMode && modelsLoaded && (
+          <div className="bg-black/40 border border-green-500/30 px-3 py-2 rounded-sm backdrop-blur-sm">
+            <h4 className="text-xs uppercase font-mono tracking-wider text-green-400 mb-1">AI Detection</h4>
+            <div className="text-xs font-mono text-gray-400 space-y-0.5">
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+                <span className="text-green-300">{availableModels[currentModel]?.name || currentModel} Active</span>
+              </div>
+              <div><span className="text-green-300">Target FPS:</span> {availableModels[currentModel]?.fps || 'N/A'}</div>
+              <div className="text-xs opacity-70">{availableModels[currentModel]?.description || 'Person Detection'}</div>
+            </div>
+          </div>
+        )}
+
+        {/* Error Message */}
+        {connectionError && (
+          <div className="text-red-400 text-sm text-right bg-red-900/50 border border-red-500/50 px-3 py-1 animate-pulse">
+            CRITICAL: {connectionError}
+          </div>
+        )}
+
+        {/* Connect/Disconnect */}
+        <button
+            onClick={connected ? disconnectWebSocket : connectWebSocket}
+            disabled={connecting}
+            className={`${controlButtonClass} ${connected ? 'text-red-400 border-red-400/30 hover:bg-red-400/20' : ''}`}
+        >
+            <Power className="w-5 h-5" />
+            <span>{connected ? "Terminate Link" : "Establish Link"}</span>
+        </button>
+      </div>
+
+      {/* --- MOTOR SETTINGS PANEL (Bottom Right) --- */}
+      <div className="absolute bottom-8 right-8 z-30 pointer-events-auto">
         <div className="relative" ref={settingsPanelRef}>
           <button
             onClick={() => setSettingsPanelOpen(!settingsPanelOpen)}
@@ -886,7 +916,7 @@ function App() {
           </button>
 
           {settingsPanelOpen && (
-            <div className="absolute top-full right-0 mt-1 w-72 bg-gray-800/95 backdrop-blur-sm border border-cyan-400/30 rounded-sm shadow-lg z-50">
+            <div className="absolute bottom-full right-0 mb-3 w-72 bg-gray-800/95 backdrop-blur-sm border border-cyan-400/30 rounded-sm shadow-lg z-50">
               <div className="p-3 space-y-4">
                 <h4 className="text-sm uppercase font-mono tracking-wider text-cyan-400">Motor Configuration</h4>
                 
@@ -968,38 +998,6 @@ function App() {
             </div>
           )}
         </div>
-
-        {/* AI Status Panel */}
-        {aiMode && modelsLoaded && (
-          <div className="bg-black/40 border border-green-500/30 px-3 py-2 rounded-sm backdrop-blur-sm">
-            <h4 className="text-xs uppercase font-mono tracking-wider text-green-400 mb-1">AI Detection</h4>
-            <div className="text-xs font-mono text-gray-400 space-y-0.5">
-              <div className="flex items-center gap-2">
-                <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
-                <span className="text-green-300">{availableModels[currentModel]?.name || currentModel} Active</span>
-              </div>
-              <div><span className="text-green-300">Target FPS:</span> {availableModels[currentModel]?.fps || 'N/A'}</div>
-              <div className="text-xs opacity-70">{availableModels[currentModel]?.description || 'Person Detection'}</div>
-            </div>
-          </div>
-        )}
-
-        {/* Error Message */}
-        {connectionError && (
-          <div className="text-red-400 text-sm text-right bg-red-900/50 border border-red-500/50 px-3 py-1 animate-pulse">
-            CRITICAL: {connectionError}
-          </div>
-        )}
-
-        {/* Connect/Disconnect */}
-        <button
-            onClick={connected ? disconnectWebSocket : connectWebSocket}
-            disabled={connecting}
-            className={`${controlButtonClass} ${connected ? 'text-red-400 border-red-400/30 hover:bg-red-400/20' : ''}`}
-        >
-            <Power className="w-5 h-5" />
-            <span>{connected ? "Terminate Link" : "Establish Link"}</span>
-        </button>
       </div>
 
       {/* --- CAMERA FEED --- */}
