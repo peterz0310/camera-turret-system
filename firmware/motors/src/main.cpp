@@ -28,6 +28,21 @@ const int baseMaxStepsPerSec = 1000;
 const int maxStepsPerSec = baseMaxStepsPerSec * microstepFactor;
 const float deadzone = 0.1;
 
+// Angular motion settings - configurable gear ratios and motor specs
+const float HORIZONTAL_GEAR_RATIO = 8.0;  // 8:1 gear ratio for yaw
+const float VERTICAL_GEAR_RATIO = 3.0;    // 3:1 gear ratio for tilt
+const float STEPS_PER_REVOLUTION = 200.0; // Standard stepper motor (1.8° per step)
+const float DEGREES_PER_REVOLUTION = 360.0;
+
+// Calculate steps per degree for each axis (accounting for microstepping and gear ratios)
+const float HORIZONTAL_STEPS_PER_DEGREE = (STEPS_PER_REVOLUTION * microstepFactor * HORIZONTAL_GEAR_RATIO) / DEGREES_PER_REVOLUTION;
+const float VERTICAL_STEPS_PER_DEGREE = (STEPS_PER_REVOLUTION * microstepFactor * VERTICAL_GEAR_RATIO) / DEGREES_PER_REVOLUTION;
+
+// Angular positioning variables
+long horizontalCenterPosition = 0;
+long verticalCenterPosition = 0;
+bool angularPositioningEnabled = false;
+
 // Servo motor settings for trigger
 const int SERVO_PIN = 27;            // GPIO pin for servo control
 const int SERVO_REST_ANGLE = 0;      // Rest position (trigger not pulled)
@@ -315,7 +330,144 @@ void calibrateMotors()
 {
   calibrateHorizontalMotor();
   calibrateVerticalMotor();
+
+  // Set center positions for angular calculations
+  horizontalCenterPosition = (leftLimitPosition + rightLimitPosition) / 2;
+  verticalCenterPosition = (downLimitPosition + upLimitPosition) / 2;
+  angularPositioningEnabled = true;
+
   Serial.println("All motors calibrated!");
+  Serial.printf("Angular positioning enabled - Center positions: H=%ld, V=%ld\n",
+                horizontalCenterPosition, verticalCenterPosition);
+  Serial.printf("Steps per degree - Horizontal: %.2f, Vertical: %.2f\n",
+                HORIZONTAL_STEPS_PER_DEGREE, VERTICAL_STEPS_PER_DEGREE);
+}
+
+// Angular motion functions
+long degreesToSteps(float degrees, bool isHorizontal)
+{
+  if (isHorizontal)
+  {
+    return (long)(degrees * HORIZONTAL_STEPS_PER_DEGREE);
+  }
+  else
+  {
+    return (long)(degrees * VERTICAL_STEPS_PER_DEGREE);
+  }
+}
+
+float stepsToDegrees(long steps, bool isHorizontal)
+{
+  if (isHorizontal)
+  {
+    return (float)steps / HORIZONTAL_STEPS_PER_DEGREE;
+  }
+  else
+  {
+    return (float)steps / VERTICAL_STEPS_PER_DEGREE;
+  }
+}
+
+bool moveToAbsoluteAngle(float horizontalDegrees, float verticalDegrees)
+{
+  if (!angularPositioningEnabled)
+  {
+    Serial.println("Angular positioning not enabled - run calibration first");
+    return false;
+  }
+
+  // Calculate target positions relative to center
+  long targetHorizontalPosition = horizontalCenterPosition + degreesToSteps(horizontalDegrees, true);
+  long targetVerticalPosition = verticalCenterPosition + degreesToSteps(verticalDegrees, false);
+
+  // Check if targets are within limits
+  if (targetHorizontalPosition < leftLimitPosition || targetHorizontalPosition > rightLimitPosition)
+  {
+    Serial.printf("Horizontal target %.2f° (pos %ld) exceeds limits [%ld, %ld]\n",
+                  horizontalDegrees, targetHorizontalPosition, leftLimitPosition, rightLimitPosition);
+    return false;
+  }
+
+  if (targetVerticalPosition < downLimitPosition || targetVerticalPosition > upLimitPosition)
+  {
+    Serial.printf("Vertical target %.2f° (pos %ld) exceeds limits [%ld, %ld]\n",
+                  verticalDegrees, targetVerticalPosition, downLimitPosition, upLimitPosition);
+    return false;
+  }
+
+  Serial.printf("Moving to absolute angles: H=%.2f° V=%.2f° (positions: H=%ld V=%ld)\n",
+                horizontalDegrees, verticalDegrees, targetHorizontalPosition, targetVerticalPosition);
+
+  horizontalStepper.moveTo(targetHorizontalPosition);
+  verticalStepper.moveTo(targetVerticalPosition);
+
+  return true;
+}
+
+bool moveByRelativeAngle(float horizontalDegrees, float verticalDegrees)
+{
+  if (!angularPositioningEnabled)
+  {
+    Serial.println("Angular positioning not enabled - run calibration first");
+    return false;
+  }
+
+  // Calculate relative movement in steps
+  long horizontalSteps = degreesToSteps(horizontalDegrees, true);
+  long verticalSteps = degreesToSteps(verticalDegrees, false);
+
+  // Calculate target positions
+  long targetHorizontalPosition = horizontalStepper.currentPosition() + horizontalSteps;
+  long targetVerticalPosition = verticalStepper.currentPosition() + verticalSteps;
+
+  // Check if targets are within limits
+  if (targetHorizontalPosition < leftLimitPosition || targetHorizontalPosition > rightLimitPosition)
+  {
+    Serial.printf("Relative horizontal move %.2f° would exceed limits\n", horizontalDegrees);
+    return false;
+  }
+
+  if (targetVerticalPosition < downLimitPosition || targetVerticalPosition > upLimitPosition)
+  {
+    Serial.printf("Relative vertical move %.2f° would exceed limits\n", verticalDegrees);
+    return false;
+  }
+
+  Serial.printf("Moving by relative angles: H=%.2f° V=%.2f° (steps: H=%ld V=%ld)\n",
+                horizontalDegrees, verticalDegrees, horizontalSteps, verticalSteps);
+
+  horizontalStepper.move(horizontalSteps);
+  verticalStepper.move(verticalSteps);
+
+  return true;
+}
+
+void getCurrentAngles(float &horizontalAngle, float &verticalAngle)
+{
+  if (!angularPositioningEnabled)
+  {
+    horizontalAngle = 0.0;
+    verticalAngle = 0.0;
+    return;
+  }
+
+  long horizontalOffset = horizontalStepper.currentPosition() - horizontalCenterPosition;
+  long verticalOffset = verticalStepper.currentPosition() - verticalCenterPosition;
+
+  horizontalAngle = stepsToDegrees(horizontalOffset, true);
+  verticalAngle = stepsToDegrees(verticalOffset, false);
+}
+
+bool moveToCenter()
+{
+  if (!angularPositioningEnabled)
+  {
+    Serial.println("Angular positioning not enabled - run calibration first");
+    return false;
+  }
+
+  Serial.println("Moving to center position (0°, 0°)");
+  return moveToAbsoluteAngle(0.0, 0.0);
 }
 
 void motorTask(void *parameter)
@@ -483,6 +635,46 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
       {
         Serial.println("Unknown fire mode: " + fireMode);
       }
+    }
+
+    // Check for angular movement commands
+    if (doc.containsKey("moveToAngle"))
+    {
+      float horizontalAngle = doc["moveToAngle"]["horizontal"].as<float>();
+      float verticalAngle = doc["moveToAngle"]["vertical"].as<float>();
+      moveToAbsoluteAngle(horizontalAngle, verticalAngle);
+    }
+
+    if (doc.containsKey("moveByAngle"))
+    {
+      float horizontalAngle = doc["moveByAngle"]["horizontal"].as<float>();
+      float verticalAngle = doc["moveByAngle"]["vertical"].as<float>();
+      moveByRelativeAngle(horizontalAngle, verticalAngle);
+    }
+
+    if (doc.containsKey("moveToCenter") && doc["moveToCenter"].as<bool>())
+    {
+      moveToCenter();
+    }
+
+    if (doc.containsKey("getCurrentAngles") && doc["getCurrentAngles"].as<bool>())
+    {
+      float horizontalAngle, verticalAngle;
+      getCurrentAngles(horizontalAngle, verticalAngle);
+
+      // Send back current angles via WebSocket
+      StaticJsonDocument<200> response;
+      response["currentAngles"]["horizontal"] = horizontalAngle;
+      response["currentAngles"]["vertical"] = verticalAngle;
+      response["positions"]["horizontal"] = horizontalStepper.currentPosition();
+      response["positions"]["vertical"] = verticalStepper.currentPosition();
+      response["calibrated"] = angularPositioningEnabled;
+
+      String responseStr;
+      serializeJson(response, responseStr);
+      server.textAll(responseStr);
+
+      Serial.printf("Current angles - H: %.2f°, V: %.2f°\n", horizontalAngle, verticalAngle);
     }
     break;
   }

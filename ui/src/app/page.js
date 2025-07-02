@@ -2,66 +2,28 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { Joystick } from "react-joystick-component";
+import { 
+  Power, 
+  Crosshair, 
+  Target, 
+  Zap, 
+  Brain, 
+  Cpu, 
+  ChevronDown, 
+  Timer, 
+  RotateCcw, 
+  Settings, 
+  ArrowUp, 
+  ArrowDown, 
+  ArrowLeft, 
+  ArrowRight
+} from "lucide-react";
 
 const WEBSOCKET_URL = "ws://192.168.4.29/ws";
 const CAMERA_STREAM_BASE_URL = "http://192.168.4.57:8081";
 const CAMERA_STREAM_URL = `${CAMERA_STREAM_BASE_URL}/stream`;
 const API_URL = `${CAMERA_STREAM_BASE_URL}/api`;
 const MAX_RECONNECT_ATTEMPTS = 5;
-
-const PowerIcon = ({ className }) => (
-  <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
-    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-12h2v8h-2z" />
-  </svg>
-);
-
-const CalibrateIcon = ({ className }) => (
-  <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
-    <path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm-7 7H3v4h4v-2H5v-2zm14-7h2v4h-2V8zm-2 11v2h4v-4h-2v2h-2zM5 5h2V3H3v4h2V5z" />
-  </svg>
-);
-
-const CrosshairIcon = ({ className }) => (
-    <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
-        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v3h3v2h-3v3h-2v-3H8v-2h3V7z"/>
-    </svg>
-);
-
-const TargetIcon = ({ className }) => (
-  <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
-    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v6h-2V7zm0 8h2v2h-2v-2z"/>
-  </svg>
-);
-
-const BurstFireIcon = ({ className }) => (
-  <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
-    <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
-  </svg>
-);
-
-const AIIcon = ({ className }) => (
-  <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
-    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-2-13h4v2h-4zm0 4h4v6h-4z"/>
-  </svg>
-);
-
-const ModelIcon = ({ className }) => (
-  <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
-    <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
-  </svg>
-);
-
-const ChevronDownIcon = ({ className }) => (
-  <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
-    <path d="M7.41 8.58L12 13.17l4.59-4.59L18 10l-6 6-6-6 1.41-1.42z"/>
-  </svg>
-);
-
-const FpsIcon = ({ className }) => (
-  <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
-    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm1-13h-2v6l5.25 3.15.75-1.23L13 12.25V7z"/>
-  </svg>
-);
 
 
 function App() {
@@ -84,6 +46,19 @@ function App() {
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [fpsInfo, setFpsInfo] = useState({});
   const [fpsSliderOpen, setFpsSliderOpen] = useState(false);
+  const [currentAngles, setCurrentAngles] = useState(null);
+  
+  // Angular motion state
+  const [angularPanelOpen, setAngularPanelOpen] = useState(false);
+  const [angularStepSize, setAngularStepSize] = useState(10);
+  const [isMoving, setIsMoving] = useState(false);
+  const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
+  const [motorSettings, setMotorSettings] = useState({
+    horizontalGearRatio: 8.0,
+    verticalGearRatio: 3.0,
+    stepsPerRevolution: 200.0,
+    microstepFactor: 2
+  });
 
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
@@ -92,6 +67,8 @@ function App() {
   const triggerPanelRef = useRef(null);
   const aiPanelRef = useRef(null);
   const fpsSliderRef = useRef(null);
+  const angularPanelRef = useRef(null);
+  const settingsPanelRef = useRef(null);
 
   // --- WEBSOCKET LOGIC ---
   const connectWebSocket = () => {
@@ -179,6 +156,12 @@ function App() {
       if (fpsSliderRef.current && !fpsSliderRef.current.contains(event.target)) {
         setFpsSliderOpen(false);
       }
+      if (angularPanelRef.current && !angularPanelRef.current.contains(event.target)) {
+        setAngularPanelOpen(false);
+      }
+      if (settingsPanelRef.current && !settingsPanelRef.current.contains(event.target)) {
+        setSettingsPanelOpen(false);
+      }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
@@ -217,12 +200,38 @@ function App() {
             handleModelSwitch(modelKeys[modelIndex]);
           }
           break;
+        // Angular movement hotkeys
+        case 'arrowup':
+        case 'w':
+          event.preventDefault();
+          handleAngularMove(0, angularStepSize);
+          break;
+        case 'arrowdown':
+        case 's':
+          event.preventDefault();
+          handleAngularMove(0, -angularStepSize);
+          break;
+        case 'arrowleft':
+        case 'a':
+          event.preventDefault();
+          handleAngularMove(-angularStepSize, 0);
+          break;
+        case 'arrowright':
+        case 'd':
+          event.preventDefault();
+          handleAngularMove(angularStepSize, 0);
+          break;
+        case 'home':
+        case 'h':
+          event.preventDefault();
+          handleMoveToCenter();
+          break;
       }
     };
 
     document.addEventListener('keydown', handleKeyPress);
     return () => document.removeEventListener('keydown', handleKeyPress);
-  }, [connected, triggerActive, aiMode]); // aiMode is needed here to get latest state in closure
+  }, [connected, triggerActive, aiMode, angularStepSize]); // Added angularStepSize dependency
 
   // --- EVENT HANDLERS ---
   const handleStreamLoad = () => {
@@ -379,6 +388,97 @@ function App() {
     }
   };
 
+  // --- ANGULAR MOTION HELPERS ---
+  function sendMoveByAngle(h, v) {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      setIsMoving(true);
+      wsRef.current.send(JSON.stringify({ moveByAngle: { horizontal: h, vertical: v } }));
+      console.log(`🎯 [ANGULAR] Moving by H:${h}°, V:${v}°`);
+      // Reset moving state after a reasonable delay
+      setTimeout(() => setIsMoving(false), 1000);
+    }
+  }
+  
+  function sendMoveToCenter() {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      setIsMoving(true);
+      wsRef.current.send(JSON.stringify({ moveToCenter: true }));
+      console.log('🎯 [ANGULAR] Moving to center position');
+      setTimeout(() => setIsMoving(false), 2000); // Center moves might take longer
+    }
+  }
+  
+  function requestCurrentAngles() {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ getCurrentAngles: true }));
+    }
+  }
+
+  // Enhanced angular movement handlers
+  const handleAngularMove = (h, v) => {
+    if (!connected || isMoving) return;
+    sendMoveByAngle(h, v);
+  };
+
+  const handleMoveToCenter = () => {
+    if (!connected || isMoving) return;
+    sendMoveToCenter();
+  };
+
+  const handleStepSizeChange = (newSize) => {
+    setAngularStepSize(newSize);
+    console.log(`🎯 [ANGULAR] Step size changed to ${newSize}°`);
+  };
+
+  const handleMotorSettingsUpdate = async (newSettings) => {
+    try {
+      // Send settings to firmware if there's an API endpoint for it
+      const response = await fetch(`${API_URL}/motor-settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newSettings)
+      });
+      
+      if (response.ok) {
+        setMotorSettings(newSettings);
+        console.log('🔧 [SETTINGS] Motor settings updated:', newSettings);
+      } else {
+        console.error('❌ [SETTINGS] Failed to update motor settings');
+      }
+    } catch (error) {
+      console.error('❌ [SETTINGS] Error updating motor settings:', error);
+      // Update local state anyway for testing
+      setMotorSettings(newSettings);
+    }
+  };
+
+  // Listen for current angle responses and other feedback
+  useEffect(() => {
+    if (!wsRef.current) return;
+    const socket = wsRef.current;
+    function handleMessage(event) {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.currentAngles) {
+          setCurrentAngles(data.currentAngles);
+          console.log('📐 [ANGULAR] Current angles received:', data.currentAngles);
+        }
+        if (data.movementComplete) {
+          setIsMoving(false);
+          console.log('✅ [ANGULAR] Movement completed');
+        }
+        if (data.calibrationComplete) {
+          console.log('✅ [CALIBRATION] Calibration completed');
+          requestCurrentAngles(); // Update angles after calibration
+        }
+      } catch (e) {
+        console.error('❌ [WS] Error parsing message:', e);
+      }
+    }
+    socket.addEventListener('message', handleMessage);
+    return () => socket.removeEventListener('message', handleMessage);
+  }, [connected]);
+
   // --- STYLING & CLASSES ---
   const controlButtonClass = "flex items-center gap-2 px-3 py-1.5 border border-cyan-400/30 bg-black/30 text-cyan-400 rounded-sm hover:bg-cyan-400/20 hover:text-cyan-300 transition-all duration-300 backdrop-blur-sm text-xs uppercase font-mono tracking-wider cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-black/30 disabled:hover:text-cyan-400";
   const crosshairOptionClass = (isActive) =>
@@ -421,7 +521,7 @@ function App() {
               onClick={() => setCrosshairPanelOpen(!crosshairPanelOpen)}
               className={controlButtonClass}
             >
-              <CrosshairIcon className="w-5 h-5"/>
+              <Crosshair className="w-5 h-5"/>
               <span>Targeting</span>
             </button>
             
@@ -461,9 +561,134 @@ function App() {
           disabled={!connected}
           className={controlButtonClass}
         >
-          <CalibrateIcon className="w-5 h-5" />
+          <RotateCcw className="w-5 h-5" />
           <span>Calibrate</span>
         </button>
+
+        {/* Angular Motion Controls */}
+        <div ref={angularPanelRef} className="relative pointer-events-auto">
+          <button
+            onClick={() => setAngularPanelOpen(!angularPanelOpen)}
+            className={`${controlButtonClass} ${isMoving ? 'border-yellow-400/50 text-yellow-400' : ''}`}
+          >
+            <RotateCcw className="w-5 h-5" />
+            <span>{isMoving ? 'MOVING...' : 'Angular'}</span>
+          </button>
+          
+          {angularPanelOpen && (
+            <div className="absolute bottom-full left-0 mb-3 bg-black/70 border border-cyan-500/30 rounded-md p-4 w-80 shadow-2xl backdrop-blur-md animate-fadeIn">
+              <div className="space-y-4">
+                <h3 className="text-sm font-bold text-cyan-400 mb-2 uppercase tracking-wider">Angular Positioning</h3>
+                
+                {/* Current Position Display */}
+                {currentAngles && (
+                  <div className="bg-gray-800/50 p-3 rounded border border-gray-600">
+                    <div className="text-xs text-gray-400 mb-1">CURRENT POSITION</div>
+                    <div className="flex justify-between text-sm">
+                      <span>H: {currentAngles.horizontal.toFixed(2)}°</span>
+                      <span>V: {currentAngles.vertical.toFixed(2)}°</span>
+                    </div>
+                  </div>
+                )}
+                
+                {/* Step Size Control */}
+                <div className="space-y-2">
+                  <label className="block text-xs text-cyan-400 uppercase tracking-wider">
+                    Step Size: {angularStepSize}°
+                  </label>
+                  <div className="flex gap-2">
+                    {[1, 5, 10, 15, 30, 45].map((size) => (
+                      <button
+                        key={size}
+                        onClick={() => handleStepSizeChange(size)}
+                        className={`px-2 py-1 text-xs rounded transition-colors ${
+                          angularStepSize === size
+                            ? 'bg-cyan-600 text-white'
+                            : 'bg-gray-700 hover:bg-gray-600 text-gray-300'
+                        }`}
+                      >
+                        {size}°
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                
+                {/* Direction Controls */}
+                <div className="space-y-3">
+                  <div className="text-xs text-cyan-400 uppercase tracking-wider">Direction Controls</div>
+                  
+                  {/* Vertical Controls */}
+                  <div className="flex justify-center">
+                    <button
+                      onClick={() => handleAngularMove(0, angularStepSize)}
+                      disabled={!connected || isMoving}
+                      className="p-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded transition-colors"
+                    >
+                      <ArrowUp className="w-4 h-4" />
+                    </button>
+                  </div>
+                  
+                  {/* Horizontal Controls */}
+                  <div className="flex justify-center gap-4">
+                    <button
+                      onClick={() => handleAngularMove(-angularStepSize, 0)}
+                      disabled={!connected || isMoving}
+                      className="p-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded transition-colors"
+                    >
+                      <ArrowLeft className="w-4 h-4" />
+                    </button>
+                    
+                    <button
+                      onClick={handleMoveToCenter}
+                      disabled={!connected || isMoving}
+                      className="px-3 py-2 bg-cyan-700 hover:bg-cyan-600 disabled:opacity-50 rounded text-xs font-mono transition-colors"
+                    >
+                      CENTER
+                    </button>
+                    
+                    <button
+                      onClick={() => handleAngularMove(angularStepSize, 0)}
+                      disabled={!connected || isMoving}
+                      className="p-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded transition-colors"
+                    >
+                      <ArrowRight className="w-4 h-4" />
+                    </button>
+                  </div>
+                  
+                  {/* Down Button */}
+                  <div className="flex justify-center">
+                    <button
+                      onClick={() => handleAngularMove(0, -angularStepSize)}
+                      disabled={!connected || isMoving}
+                      className="p-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded transition-colors"
+                    >
+                      <ArrowDown className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+                
+                {/* Quick Actions */}
+                <div className="border-t border-gray-600 pt-3 space-y-2">
+                  <button
+                    onClick={requestCurrentAngles}
+                    disabled={!connected}
+                    className="w-full px-3 py-1.5 bg-blue-700 hover:bg-blue-600 disabled:opacity-50 rounded text-xs font-mono transition-colors"
+                  >
+                    REFRESH POSITION
+                  </button>
+                </div>
+                
+                {/* Hotkey Help */}
+                <div className="border-t border-gray-600 pt-2">
+                  <div className="text-xs text-gray-500">
+                    <div className="font-mono">WASD/Arrow Keys: Move</div>
+                    <div className="font-mono">H/Home: Center</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
 
         {/* AI Detection Controls */}
         <div className="flex flex-col gap-2 pointer-events-auto">
@@ -471,7 +696,7 @@ function App() {
             onClick={handleAIToggle}
             className={`${controlButtonClass} ${aiMode ? 'border-green-400/50 text-green-400 hover:bg-green-400/20 hover:text-green-300' : 'hover:border-purple-400/50 hover:text-purple-300'}`}
           >
-            <AIIcon className="w-5 h-5" />
+            <Brain className="w-5 h-5" />
             <span>{aiMode ? 'AI ACTIVE' : 'AI STANDBY'}</span>
           </button>
 
@@ -483,10 +708,10 @@ function App() {
                 className={`${controlButtonClass} justify-between w-full`}
               >
                 <div className="flex items-center gap-2">
-                  <ModelIcon className="w-4 h-4" />
+                  <Cpu className="w-4 h-4" />
                   <span>{availableModels[currentModel]?.name || currentModel}</span>
                 </div>
-                <ChevronDownIcon className={`w-4 h-4 transition-transform ${aiPanelOpen ? 'rotate-180' : ''}`} />
+                <ChevronDown className={`w-4 h-4 transition-transform ${aiPanelOpen ? 'rotate-180' : ''}`} />
               </button>
 
               {aiPanelOpen && (
@@ -527,10 +752,10 @@ function App() {
                 className={`${controlButtonClass} justify-between w-full`}
               >
                 <div className="flex items-center gap-2">
-                  <FpsIcon className="w-4 h-4" />
+                  <Timer className="w-4 h-4" />
                   <span>FPS CONTROL</span>
                 </div>
-                <ChevronDownIcon className={`w-4 h-4 transition-transform ${fpsSliderOpen ? 'rotate-180' : ''}`} />
+                <ChevronDown className={`w-4 h-4 transition-transform ${fpsSliderOpen ? 'rotate-180' : ''}`} />
               </button>
 
               {fpsSliderOpen && (
@@ -595,7 +820,7 @@ function App() {
             disabled={!connected || triggerActive}
             className={`${controlButtonClass} ${triggerActive ? 'opacity-50 cursor-not-allowed' : 'hover:border-orange-400/50 hover:text-orange-300'}`}
           >
-            <TargetIcon className="w-5 h-5" />
+            <Target className="w-5 h-5" />
             <span>Single Shot</span>
           </button>
           
@@ -604,7 +829,7 @@ function App() {
             disabled={!connected || triggerActive}
             className={`${controlButtonClass} ${triggerActive ? 'opacity-50 cursor-not-allowed' : 'hover:border-red-400/50 hover:text-red-300'}`}
           >
-            <BurstFireIcon className="w-5 h-5" />
+            <Zap className="w-5 h-5" />
             <span>Burst Fire</span>
           </button>
         </div>
@@ -638,6 +863,8 @@ function App() {
               <div><span className="text-cyan-300">B/V:</span> Burst Fire</div>
               <div><span className="text-cyan-300">C:</span> Calibrate</div>
               <div><span className="text-cyan-300">A:</span> Toggle AI</div>
+              <div><span className="text-cyan-300">WASD/Arrows:</span> Angular Move</div>
+              <div><span className="text-cyan-300">H/Home:</span> Center Position</div>
               {Object.keys(availableModels).length > 0 && (
                 <>
                   <div><span className="text-cyan-300">1:</span> MobileNet Model</div>
@@ -647,6 +874,100 @@ function App() {
             </div>
           </div>
         )}
+
+        {/* Motor Settings Panel */}
+        <div className="relative" ref={settingsPanelRef}>
+          <button
+            onClick={() => setSettingsPanelOpen(!settingsPanelOpen)}
+            className={controlButtonClass}
+          >
+            <Settings className="w-4 h-4" />
+            <span>Motor Config</span>
+          </button>
+
+          {settingsPanelOpen && (
+            <div className="absolute top-full right-0 mt-1 w-72 bg-gray-800/95 backdrop-blur-sm border border-cyan-400/30 rounded-sm shadow-lg z-50">
+              <div className="p-3 space-y-4">
+                <h4 className="text-sm uppercase font-mono tracking-wider text-cyan-400">Motor Configuration</h4>
+                
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Horizontal Gear Ratio</label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={motorSettings.horizontalGearRatio}
+                      onChange={(e) => setMotorSettings({
+                        ...motorSettings,
+                        horizontalGearRatio: parseFloat(e.target.value)
+                      })}
+                      className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Vertical Gear Ratio</label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={motorSettings.verticalGearRatio}
+                      onChange={(e) => setMotorSettings({
+                        ...motorSettings,
+                        verticalGearRatio: parseFloat(e.target.value)
+                      })}
+                      className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Steps Per Revolution</label>
+                    <input
+                      type="number"
+                      value={motorSettings.stepsPerRevolution}
+                      onChange={(e) => setMotorSettings({
+                        ...motorSettings,
+                        stepsPerRevolution: parseInt(e.target.value)
+                      })}
+                      className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Microstep Factor</label>
+                    <select
+                      value={motorSettings.microstepFactor}
+                      onChange={(e) => setMotorSettings({
+                        ...motorSettings,
+                        microstepFactor: parseInt(e.target.value)
+                      })}
+                      className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+                    >
+                      <option value={1}>1 (Full Step)</option>
+                      <option value={2}>2 (Half Step)</option>
+                      <option value={4}>4 (Quarter Step)</option>
+                      <option value={8}>8 (Eighth Step)</option>
+                      <option value={16}>16 (Sixteenth Step)</option>
+                    </select>
+                  </div>
+                </div>
+                
+                <div className="border-t border-gray-600 pt-3">
+                  <button
+                    onClick={() => handleMotorSettingsUpdate(motorSettings)}
+                    className="w-full px-3 py-2 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-sm font-mono transition-colors"
+                  >
+                    UPDATE SETTINGS
+                  </button>
+                </div>
+                
+                <div className="text-xs text-gray-500 font-mono">
+                  <div>Current H Steps/°: {((motorSettings.stepsPerRevolution * motorSettings.microstepFactor * motorSettings.horizontalGearRatio) / 360).toFixed(2)}</div>
+                  <div>Current V Steps/°: {((motorSettings.stepsPerRevolution * motorSettings.microstepFactor * motorSettings.verticalGearRatio) / 360).toFixed(2)}</div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
 
         {/* AI Status Panel */}
         {aiMode && modelsLoaded && (
@@ -676,7 +997,7 @@ function App() {
             disabled={connecting}
             className={`${controlButtonClass} ${connected ? 'text-red-400 border-red-400/30 hover:bg-red-400/20' : ''}`}
         >
-            <PowerIcon className="w-5 h-5" />
+            <Power className="w-5 h-5" />
             <span>{connected ? "Terminate Link" : "Establish Link"}</span>
         </button>
       </div>
