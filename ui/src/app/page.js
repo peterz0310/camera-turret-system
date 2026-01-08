@@ -497,6 +497,64 @@ function App() {
     return () => socket.removeEventListener('message', handleMessage);
   }, [connected]);
 
+  // --- ANGLE VISUALS ---
+  const yawAngleDeg = currentAngles ? ((currentAngles.horizontal % 360) + 360) % 360 : 0;
+  const tiltAngleDeg = currentAngles ? Math.max(-90, Math.min(90, currentAngles.vertical)) : 0;
+
+  const renderYawGauge = () => {
+    const size = 180;
+    const center = size / 2;
+    const radius = size / 2 - 12;
+    const rad = ((yawAngleDeg - 90) * Math.PI) / 180; // 0° points up
+    const x = center + radius * Math.cos(rad);
+    const y = center + radius * Math.sin(rad);
+
+    return (
+      <div className="flex flex-col items-center gap-2">
+        <div className="text-xs text-cyan-300 uppercase tracking-wider">Yaw</div>
+        <svg width={size} height={size} className="text-cyan-400">
+          <circle cx={center} cy={center} r={radius} className="stroke-cyan-700/60" strokeWidth="2" fill="none" />
+          <line x1={center} y1={center} x2={x} y2={y} stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+          <circle cx={center} cy={center} r="4" fill="currentColor" />
+          <text x={center} y={center + 6} textAnchor="middle" className="fill-cyan-300 text-sm font-mono">
+            {yawAngleDeg.toFixed(1)}°
+          </text>
+        </svg>
+      </div>
+    );
+  };
+
+  const renderTiltGauge = () => {
+    const width = 200;
+    const height = 110;
+    const centerX = width / 2;
+    const centerY = height - 10;
+    const radius = width / 2 - 12;
+    const clampedTilt = tiltAngleDeg;
+    const rad = ((clampedTilt + 90) * Math.PI) / 180; // -90 left, +90 right
+    const x = centerX + radius * Math.cos(rad);
+    const y = centerY - radius * Math.sin(rad);
+
+    return (
+      <div className="flex flex-col items-center gap-2">
+        <div className="text-xs text-cyan-300 uppercase tracking-wider">Tilt</div>
+        <svg width={width} height={height} className="text-cyan-400">
+          <path
+            d={`M ${centerX - radius} ${centerY} A ${radius} ${radius} 0 0 1 ${centerX + radius} ${centerY}`}
+            className="stroke-cyan-700/60"
+            strokeWidth="2"
+            fill="none"
+          />
+          <line x1={centerX} y1={centerY} x2={x} y2={y} stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+          <circle cx={centerX} cy={centerY} r="4" fill="currentColor" />
+          <text x={centerX} y={centerY - radius - 6} textAnchor="middle" className="fill-cyan-300 text-sm font-mono">
+            {clampedTilt.toFixed(1)}°
+          </text>
+        </svg>
+      </div>
+    );
+  };
+
   // --- STYLING & CLASSES ---
   const controlButtonClass = "flex items-center gap-2 px-3 py-1.5 border border-cyan-400/30 bg-black/30 text-cyan-400 rounded-sm hover:bg-cyan-400/20 hover:text-cyan-300 transition-all duration-300 backdrop-blur-sm text-xs uppercase font-mono tracking-wider cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-black/30 disabled:hover:text-cyan-400";
   const crosshairOptionClass = (isActive) =>
@@ -1080,6 +1138,14 @@ function App() {
             )}
               {/* Scanlines Effect */}
             <div className="absolute inset-0 z-10 pointer-events-none opacity-10 bg-[linear-gradient(to_bottom,transparent_50%,black_50%)] bg-[size:100%_4px]"></div>
+        </div>
+      </div>
+
+      {/* --- ANGLE GAUGES --- */}
+      <div className="absolute bottom-6 left-6 z-30 pointer-events-auto">
+        <div className="bg-black/50 border border-cyan-500/30 rounded-sm px-4 py-3 shadow-lg backdrop-blur-sm flex gap-8">
+          {renderYawGauge()}
+          {renderTiltGauge()}
         </div>
       </div>
 
