@@ -11,11 +11,10 @@ const char *password = "mistycanoe3";
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
 
-// Horizontal stepper motor settings (left/right)
+// Horizontal stepper motor settings (yaw)
 const int H_STEP_PIN = 26;
 const int H_DIR_PIN = 25;
-const int LEFT_LIMIT_PIN = 32;
-const int RIGHT_LIMIT_PIN = 33;
+const int H_HOME_PIN = 32; // Hall-effect sensor for yaw home (active LOW)
 
 // Vertical stepper motor settings (up/down - tilt)
 const int V_STEP_PIN = 14;
@@ -24,13 +23,17 @@ const int UP_LIMIT_PIN = 4;
 const int DOWN_LIMIT_PIN = 5;
 
 const int microstepFactor = 2;
-const int baseMaxStepsPerSec = 1000;
+const int baseMaxStepsPerSec = 500; // Lowered to keep motion safe
 const int maxStepsPerSec = baseMaxStepsPerSec * microstepFactor;
+const float joystickSpeedLimit = 0.6; // Clamp joystick speed to 60% of max
+const float calibrationSpeedFactor = 0.3; // Fraction of max speed during calibration
+const float effectiveMaxStepsPerSec = maxStepsPerSec * joystickSpeedLimit;
 const float deadzone = 0.1;
 const float speedExponent = 1.0; // Control speed curve: 1.0 = linear, 2.0 = exponential
+const unsigned long CALIBRATION_TIMEOUT_MS = 15000;
 
 // Angular motion settings - configurable gear ratios and motor specs
-const float HORIZONTAL_GEAR_RATIO = 8.0;  // 8:1 gear ratio for yaw
+const float HORIZONTAL_GEAR_RATIO = 4.0;  // 4:1 gear ratio for yaw
 const float VERTICAL_GEAR_RATIO = 3.0;    // 3:1 gear ratio for tilt
 const float STEPS_PER_REVOLUTION = 200.0; // Standard stepper motor (1.8° per step)
 const float DEGREES_PER_REVOLUTION = 360.0;
@@ -38,6 +41,8 @@ const float DEGREES_PER_REVOLUTION = 360.0;
 // Calculate steps per degree for each axis (accounting for microstepping and gear ratios)
 const float HORIZONTAL_STEPS_PER_DEGREE = (STEPS_PER_REVOLUTION * microstepFactor * HORIZONTAL_GEAR_RATIO) / DEGREES_PER_REVOLUTION;
 const float VERTICAL_STEPS_PER_DEGREE = (STEPS_PER_REVOLUTION * microstepFactor * VERTICAL_GEAR_RATIO) / DEGREES_PER_REVOLUTION;
+const long HORIZONTAL_FULL_ROTATION_STEPS = (long)(HORIZONTAL_STEPS_PER_DEGREE * DEGREES_PER_REVOLUTION);
+const long HORIZONTAL_HALF_RANGE_STEPS = HORIZONTAL_FULL_ROTATION_STEPS / 2;
 
 // Angular positioning variables
 long horizontalCenterPosition = 0;
@@ -67,16 +72,13 @@ bool triggerReturning = false;
 unsigned long nextBurstShotTime = 0;
 
 // Limit switch variables
-volatile bool leftLimitHit = false;
-volatile bool rightLimitHit = false;
 volatile bool upLimitHit = false;
 volatile bool downLimitHit = false;
 bool isHorizontalCalibrated = false;
 bool isVerticalCalibrated = false;
-long leftLimitPosition = 0;
-long rightLimitPosition = 0;
 long upLimitPosition = 0;
 long downLimitPosition = 0;
+volatile bool homeSensorTriggered = false;
 
 // Global joystick values (updated via WebSocket)
 volatile float joystickX = 0.0;
@@ -90,20 +92,20 @@ volatile bool angularMovementInProgress = false;
 unsigned long angularMovementStartTime = 0;
 const unsigned long ANGULAR_MOVEMENT_TIMEOUT = 10000; // 10 seconds max for angular moves
 
+// Forward declarations
+void cancelAngularMovement();
+void homeTurret();
+void stopAllMotion();
+
 // Create AccelStepper instances
 AccelStepper horizontalStepper(AccelStepper::DRIVER, H_STEP_PIN, H_DIR_PIN);
 AccelStepper verticalStepper(AccelStepper::DRIVER, V_STEP_PIN, V_DIR_PIN);
 
-// Interrupt service routines for limit switches
-// These functions are called INSTANTLY when limit switches change state
-void IRAM_ATTR leftLimitISR()
+// Interrupt service routines for limit switches and sensors
+// These functions are called instantly when the inputs change state
+void IRAM_ATTR homeSensorISR()
 {
-  leftLimitHit = digitalRead(LEFT_LIMIT_PIN) == LOW;
-}
-
-void IRAM_ATTR rightLimitISR()
-{
-  rightLimitHit = digitalRead(RIGHT_LIMIT_PIN) == LOW;
+  homeSensorTriggered = digitalRead(H_HOME_PIN) == LOW;
 }
 
 void IRAM_ATTR upLimitISR()
@@ -116,16 +118,6 @@ void IRAM_ATTR downLimitISR()
   downLimitHit = digitalRead(DOWN_LIMIT_PIN) == LOW;
 }
 
-bool canMoveLeft()
-{
-  return !leftLimitHit;
-}
-
-bool canMoveRight()
-{
-  return !rightLimitHit;
-}
-
 bool canMoveUp()
 {
   return !upLimitHit;
@@ -134,6 +126,57 @@ bool canMoveUp()
 bool canMoveDown()
 {
   return !downLimitHit;
+}
+
+bool isHomeSensorActive()
+{
+  return digitalRead(H_HOME_PIN) == LOW;
+}
+
+float wrapTo360(float angle)
+{
+  float wrapped = fmod(angle, 360.0f);
+  if (wrapped < 0)
+  {
+    wrapped += 360.0f;
+  }
+  return wrapped;
+}
+
+float wrapTo180(float angle)
+{
+  float wrapped360 = wrapTo360(angle);
+  if (wrapped360 > 180.0f)
+  {
+    wrapped360 -= 360.0f;
+  }
+  return wrapped360;
+}
+
+float shortestDeltaDegrees(float currentDeg, float targetDeg)
+{
+  float delta = targetDeg - currentDeg;
+  while (delta > 180.0f)
+  {
+    delta -= 360.0f;
+  }
+  while (delta < -180.0f)
+  {
+    delta += 360.0f;
+  }
+  return delta;
+}
+
+bool canMoveHorizontallyWithSpeed(float speed)
+{
+  // With slip ring installed, yaw can rotate continuously; no soft stops
+  return true;
+}
+
+void stopAllMotion()
+{
+  horizontalStepper.setSpeed(0);
+  verticalStepper.setSpeed(0);
 }
 
 // Non-blocking trigger control functions
@@ -235,91 +278,85 @@ void updateBurstFire()
 }
 
 // Calibration function - moves to both limits to establish working range
-void calibrateHorizontalMotor()
+bool calibrateHorizontalMotor()
 {
-  Serial.println("Starting horizontal motor calibration...");
-  Serial.printf("Initial limit states - Left: %s, Right: %s\n",
-                leftLimitHit ? "HIT" : "OK", rightLimitHit ? "HIT" : "OK");
+  Serial.println("Starting horizontal motor calibration using hall-effect home sensor...");
+  isHorizontalCalibrated = false;
+  homeSensorTriggered = isHomeSensorActive();
+  unsigned long startTime = millis();
 
-  // If we're already at left limit, move away first
-  if (leftLimitHit)
+  // If sensor is already triggered, gently move off it first
+  if (homeSensorTriggered)
   {
-    Serial.println("Already at left limit, moving away...");
-    horizontalStepper.setSpeed(maxStepsPerSec * 0.2);
-    while (leftLimitHit)
+    Serial.println("Home sensor active on start - backing off slowly");
+    horizontalStepper.setSpeed(-maxStepsPerSec * 0.15);
+    while (isHomeSensorActive())
     {
       horizontalStepper.runSpeed();
+      if (millis() - startTime > CALIBRATION_TIMEOUT_MS)
+      {
+        Serial.println("Timeout while backing off home sensor");
+        horizontalStepper.setSpeed(0);
+        return false;
+      }
       delay(1);
     }
     horizontalStepper.setSpeed(0);
-    delay(100);
+    homeSensorTriggered = false;
+    delay(150);
   }
 
-  // Move left until limit switch is hit
-  Serial.println("Moving to left limit...");
-  horizontalStepper.setSpeed(-maxStepsPerSec * 0.3);
-  while (canMoveLeft())
+  const long searchStartPosition = horizontalStepper.currentPosition();
+  const long maxSearchSteps = (long)(HORIZONTAL_FULL_ROTATION_STEPS * 1.5); // Up to 1.5 revolutions
+  const float searchSpeed = maxStepsPerSec * calibrationSpeedFactor;
+  bool homeFound = false;
+
+  Serial.println("Sweeping yaw to find home sensor...");
+  horizontalStepper.setSpeed(searchSpeed);
+  while (labs(horizontalStepper.currentPosition() - searchStartPosition) < maxSearchSteps)
   {
     horizontalStepper.runSpeed();
-    delay(1);
-  }
-  leftLimitPosition = horizontalStepper.currentPosition();
-  horizontalStepper.setSpeed(0);
-  Serial.printf("Left limit found at position: %ld\n", leftLimitPosition);
-
-  // Move away from left limit a bit
-  horizontalStepper.move(100);
-  while (horizontalStepper.distanceToGo() != 0)
-  {
-    horizontalStepper.run();
-  }
-
-  // If we're already at right limit, move away first
-  if (rightLimitHit)
-  {
-    Serial.println("Already at right limit, moving away...");
-    horizontalStepper.setSpeed(-maxStepsPerSec * 0.2);
-    while (rightLimitHit)
+    if (homeSensorTriggered || isHomeSensorActive())
     {
-      horizontalStepper.runSpeed();
-      delay(1);
+      homeFound = true;
+      break;
     }
-    horizontalStepper.setSpeed(0);
-    delay(100);
-  }
-
-  // Move right until limit switch is hit
-  Serial.println("Moving to right limit...");
-  horizontalStepper.setSpeed(maxStepsPerSec * 0.3);
-  while (canMoveRight())
-  {
-    horizontalStepper.runSpeed();
+    if (millis() - startTime > CALIBRATION_TIMEOUT_MS)
+    {
+      Serial.println("Timeout while searching for yaw home sensor");
+      break;
+    }
     delay(1);
   }
-  rightLimitPosition = horizontalStepper.currentPosition();
   horizontalStepper.setSpeed(0);
-  Serial.printf("Right limit found at position: %ld\n", rightLimitPosition);
 
-  // Move to center
-  long centerPosition = (leftLimitPosition + rightLimitPosition) / 2;
-  horizontalStepper.moveTo(centerPosition);
-  while (horizontalStepper.distanceToGo() != 0)
+  if (!homeFound)
   {
-    horizontalStepper.run();
+    Serial.println("ERROR: Home sensor not detected during yaw calibration");
+    return false;
   }
 
+  // Zero position at the sensor
+  horizontalStepper.setCurrentPosition(0);
+  horizontalCenterPosition = 0;
   isHorizontalCalibrated = true;
+  homeSensorTriggered = false;
+
   Serial.println("Horizontal calibration complete!");
-  Serial.printf("Horizontal working range: %ld to %ld steps (%ld total)\n",
-                leftLimitPosition, rightLimitPosition,
-                rightLimitPosition - leftLimitPosition);
+  Serial.println("Yaw home set at 0° with continuous rotation enabled (slip ring)");
+  return true;
 }
 
-void calibrateVerticalMotor()
+bool calibrateVerticalMotor()
 {
   Serial.println("Starting vertical motor calibration...");
+  isVerticalCalibrated = false;
   Serial.printf("Initial limit states - Up: %s, Down: %s\n",
                 upLimitHit ? "HIT" : "OK", downLimitHit ? "HIT" : "OK");
+  const long maxVerticalSearchSteps = (long)(VERTICAL_STEPS_PER_DEGREE * 200); // ~200° equivalent travel
+  bool downFound = false;
+  bool upFound = false;
+  unsigned long startTime = millis();
 
   // If we're already at down limit, move away first
   if (downLimitHit)
@@ -337,14 +374,22 @@ void calibrateVerticalMotor()
 
   // Move down until limit switch is hit
   Serial.println("Moving to down limit...");
-  verticalStepper.setSpeed(-maxStepsPerSec * 0.3);
-  while (canMoveDown())
+  verticalStepper.setSpeed(-maxStepsPerSec * calibrationSpeedFactor);
+  long downSearchStart = verticalStepper.currentPosition();
+  while (canMoveDown() && labs(verticalStepper.currentPosition() - downSearchStart) < maxVerticalSearchSteps)
   {
     verticalStepper.runSpeed();
+    if (millis() - startTime > CALIBRATION_TIMEOUT_MS)
+    {
+      Serial.println("Timeout while searching for down limit");
+      verticalStepper.setSpeed(0);
+      break;
+    }
     delay(1);
   }
   downLimitPosition = verticalStepper.currentPosition();
   verticalStepper.setSpeed(0);
+  downFound = !canMoveDown();
   Serial.printf("Down limit found at position: %ld\n", downLimitPosition);
 
   // Move away from down limit a bit
@@ -370,51 +415,139 @@ void calibrateVerticalMotor()
 
   // Move up until limit switch is hit
   Serial.println("Moving to up limit...");
-  verticalStepper.setSpeed(maxStepsPerSec * 0.3);
-  while (canMoveUp())
+  verticalStepper.setSpeed(maxStepsPerSec * calibrationSpeedFactor);
+  long upSearchStart = verticalStepper.currentPosition();
+  while (canMoveUp() && labs(verticalStepper.currentPosition() - upSearchStart) < maxVerticalSearchSteps)
   {
     verticalStepper.runSpeed();
+    if (millis() - startTime > CALIBRATION_TIMEOUT_MS)
+    {
+      Serial.println("Timeout while searching for up limit");
+      verticalStepper.setSpeed(0);
+      break;
+    }
     delay(1);
   }
   upLimitPosition = verticalStepper.currentPosition();
   verticalStepper.setSpeed(0);
+  upFound = !canMoveUp();
   Serial.printf("Up limit found at position: %ld\n", upLimitPosition);
 
-  // Move to center
-  long centerPosition = (downLimitPosition + upLimitPosition) / 2;
-  verticalStepper.moveTo(centerPosition);
-  while (verticalStepper.distanceToGo() != 0)
+  if (downFound && upFound)
   {
-    verticalStepper.run();
+    // Move to center
+    long centerPosition = (downLimitPosition + upLimitPosition) / 2;
+    verticalCenterPosition = centerPosition;
+    verticalStepper.moveTo(centerPosition);
+    while (verticalStepper.distanceToGo() != 0)
+    {
+      verticalStepper.run();
+    }
+
+    isVerticalCalibrated = true;
+    Serial.println("Vertical calibration complete!");
+    Serial.printf("Vertical working range: %ld to %ld steps (%ld total)\n",
+                  downLimitPosition, upLimitPosition,
+                  upLimitPosition - downLimitPosition);
+    return true;
   }
 
-  isVerticalCalibrated = true;
-  Serial.println("Vertical calibration complete!");
-  Serial.printf("Vertical working range: %ld to %ld steps (%ld total)\n",
-                downLimitPosition, upLimitPosition,
-                upLimitPosition - downLimitPosition);
+  isVerticalCalibrated = false;
+  Serial.println("WARNING: Vertical calibration incomplete - limit switches not detected as expected");
+  return false;
 }
 
 void calibrateMotors()
 {
   Serial.println("Starting motor calibration - pausing motor task...");
   calibrationInProgress = true;
+  cancelAngularMovement();
   delay(100); // Give motor task time to pause
 
-  calibrateHorizontalMotor();
-  calibrateVerticalMotor();
+  unsigned long calibrationStart = millis();
+  bool horizontalOk = calibrateHorizontalMotor();
+  if (millis() - calibrationStart > CALIBRATION_TIMEOUT_MS)
+  {
+    Serial.println("Calibration timeout reached during yaw homing");
+    stopAllMotion();
+  }
 
-  // Set center positions for angular calculations
-  horizontalCenterPosition = (leftLimitPosition + rightLimitPosition) / 2;
-  verticalCenterPosition = (downLimitPosition + upLimitPosition) / 2;
-  angularPositioningEnabled = true;
+  bool verticalOk = calibrateVerticalMotor();
+  if (millis() - calibrationStart > (CALIBRATION_TIMEOUT_MS * 2))
+  {
+    Serial.println("Calibration timeout reached during tilt sweep");
+    stopAllMotion();
+  }
+
+  angularPositioningEnabled = horizontalOk && verticalOk;
 
   calibrationInProgress = false; // Resume motor task
-  Serial.println("All motors calibrated! Motor task resumed.");
-  Serial.printf("Angular positioning enabled - Center positions: H=%ld, V=%ld\n",
-                horizontalCenterPosition, verticalCenterPosition);
-  Serial.printf("Steps per degree - Horizontal: %.2f, Vertical: %.2f\n",
-                HORIZONTAL_STEPS_PER_DEGREE, VERTICAL_STEPS_PER_DEGREE);
+  if (angularPositioningEnabled)
+  {
+    Serial.println("All motors calibrated! Motor task resumed.");
+    Serial.printf("Angular positioning enabled - Center positions: H=%ld, V=%ld\n",
+                  horizontalCenterPosition, verticalCenterPosition);
+    Serial.printf("Steps per degree - Horizontal: %.2f, Vertical: %.2f\n",
+                  HORIZONTAL_STEPS_PER_DEGREE, VERTICAL_STEPS_PER_DEGREE);
+  }
+  else
+  {
+    Serial.println("Calibration incomplete - check sensors/limit switches");
+  }
+
+  // Notify any connected clients
+  StaticJsonDocument<128> response;
+  response["calibrationComplete"] = angularPositioningEnabled;
+  response["yawHomed"] = horizontalOk;
+  response["tiltCalibrated"] = verticalOk;
+  String responseStr;
+  serializeJson(response, responseStr);
+  if (ws.count() > 0)
+  {
+    ws.textAll(responseStr);
+  }
+}
+
+void homeTurret()
+{
+  if (!angularPositioningEnabled)
+  {
+    Serial.println("System not calibrated - running full calibration before homing");
+    calibrateMotors();
+    return;
+  }
+
+  Serial.println("Starting homing sequence (yaw hall sensor + tilt center)...");
+  calibrationInProgress = true;
+  cancelAngularMovement();
+  horizontalStepper.setSpeed(0);
+  verticalStepper.setSpeed(0);
+  delay(50);
+
+  bool yawOk = calibrateHorizontalMotor();
+
+  // Move tilt back to center using known range
+  verticalStepper.moveTo(verticalCenterPosition);
+  while (verticalStepper.distanceToGo() != 0)
+  {
+    verticalStepper.run();
+  }
+
+  angularPositioningEnabled = yawOk && isVerticalCalibrated;
+  calibrationInProgress = false;
+
+  StaticJsonDocument<96> response;
+  response["homeComplete"] = true;
+  response["yawHomed"] = yawOk;
+  response["tiltCentered"] = true;
+  String responseStr;
+  serializeJson(response, responseStr);
+  if (ws.count() > 0)
+  {
+    ws.textAll(responseStr);
+  }
+
+  Serial.println("Homing sequence complete");
 }
 
 // Angular motion functions
@@ -444,24 +577,27 @@ float stepsToDegrees(long steps, bool isHorizontal)
 
 bool moveToAbsoluteAngle(float horizontalDegrees, float verticalDegrees)
 {
+  if (calibrationInProgress)
+  {
+    Serial.println("Calibration in progress - cannot move to angle");
+    return false;
+  }
+
   if (!angularPositioningEnabled)
   {
     Serial.println("Angular positioning not enabled - run calibration first");
     return false;
   }
 
-  // Calculate target positions relative to center
-  long targetHorizontalPosition = horizontalCenterPosition + degreesToSteps(horizontalDegrees, true);
+  // Horizontal (yaw) with slip ring: wrap target to 0-360 and take shortest path
+  float currentHorizontalAngle = wrapTo360(stepsToDegrees(horizontalStepper.currentPosition() - horizontalCenterPosition, true));
+  float targetHorizontalAngle = wrapTo360(horizontalDegrees);
+  float horizontalDelta = shortestDeltaDegrees(currentHorizontalAngle, targetHorizontalAngle);
+  long targetHorizontalPosition = horizontalStepper.currentPosition() + degreesToSteps(horizontalDelta, true);
+
   long targetVerticalPosition = verticalCenterPosition + degreesToSteps(verticalDegrees, false);
 
   // Check if targets are within limits
-  if (targetHorizontalPosition < leftLimitPosition || targetHorizontalPosition > rightLimitPosition)
-  {
-    Serial.printf("Horizontal target %.2f° (pos %ld) exceeds limits [%ld, %ld]\n",
-                  horizontalDegrees, targetHorizontalPosition, leftLimitPosition, rightLimitPosition);
-    return false;
-  }
-
   if (targetVerticalPosition < downLimitPosition || targetVerticalPosition > upLimitPosition)
   {
     Serial.printf("Vertical target %.2f° (pos %ld) exceeds limits [%ld, %ld]\n",
@@ -469,8 +605,8 @@ bool moveToAbsoluteAngle(float horizontalDegrees, float verticalDegrees)
     return false;
   }
 
-  Serial.printf("Moving to absolute angles: H=%.2f° V=%.2f° (positions: H=%ld V=%ld)\n",
-                horizontalDegrees, verticalDegrees, targetHorizontalPosition, targetVerticalPosition);
+  Serial.printf("Moving to absolute angles: H=%.2f° (delta %.2f°) V=%.2f° (positions: H=%ld V=%ld)\n",
+                targetHorizontalAngle, horizontalDelta, verticalDegrees, targetHorizontalPosition, targetVerticalPosition);
 
   // Set angular movement mode to prevent joystick interference
   angularMovementInProgress = true;
@@ -484,6 +620,12 @@ bool moveToAbsoluteAngle(float horizontalDegrees, float verticalDegrees)
 
 bool moveByRelativeAngle(float horizontalDegrees, float verticalDegrees)
 {
+  if (calibrationInProgress)
+  {
+    Serial.println("Calibration in progress - cannot move by relative angle");
+    return false;
+  }
+
   if (!angularPositioningEnabled)
   {
     Serial.println("Angular positioning not enabled - run calibration first");
@@ -498,13 +640,7 @@ bool moveByRelativeAngle(float horizontalDegrees, float verticalDegrees)
   long targetHorizontalPosition = horizontalStepper.currentPosition() + horizontalSteps;
   long targetVerticalPosition = verticalStepper.currentPosition() + verticalSteps;
 
-  // Check if targets are within limits
-  if (targetHorizontalPosition < leftLimitPosition || targetHorizontalPosition > rightLimitPosition)
-  {
-    Serial.printf("Relative horizontal move %.2f° would exceed limits\n", horizontalDegrees);
-    return false;
-  }
-
+  // Check if targets are within limits (tilt only)
   if (targetVerticalPosition < downLimitPosition || targetVerticalPosition > upLimitPosition)
   {
     Serial.printf("Relative vertical move %.2f° would exceed limits\n", verticalDegrees);
@@ -536,7 +672,8 @@ void getCurrentAngles(float &horizontalAngle, float &verticalAngle)
   long horizontalOffset = horizontalStepper.currentPosition() - horizontalCenterPosition;
   long verticalOffset = verticalStepper.currentPosition() - verticalCenterPosition;
 
-  horizontalAngle = stepsToDegrees(horizontalOffset, true);
+  float absoluteYaw = wrapTo360(stepsToDegrees(horizontalOffset, true));
+  horizontalAngle = wrapTo180(absoluteYaw); // Report in -180..180 for easier readability
   verticalAngle = stepsToDegrees(verticalOffset, false);
 }
 
@@ -625,22 +762,38 @@ void motorTask(void *parameter)
     if (fabs(currentX) > deadzone)
     {
       float normX = (fabs(currentX) - deadzone) / (1.0 - deadzone);
-      float mappedSpeed = pow(normX, speedExponent) * maxStepsPerSec;
+      float mappedSpeed = pow(normX, speedExponent) * effectiveMaxStepsPerSec;
 
-      // Check limit switches before setting speed
-      if (currentX > 0 && canMoveRight())
-      { // Moving right
-        currentHorizontalSpeed = mappedSpeed;
-        horizontalStepper.setSpeed(currentHorizontalSpeed);
+      // Check yaw soft limits before setting speed
+      if (currentX > 0)
+      {
+        if (canMoveHorizontallyWithSpeed(mappedSpeed))
+        {
+          currentHorizontalSpeed = mappedSpeed;
+          horizontalStepper.setSpeed(currentHorizontalSpeed);
+        }
+        else
+        {
+          horizontalStepper.setSpeed(0);
+          currentHorizontalSpeed = 0;
+        }
       }
-      else if (currentX < 0 && canMoveLeft())
-      { // Moving left
-        currentHorizontalSpeed = -mappedSpeed;
-        horizontalStepper.setSpeed(currentHorizontalSpeed);
+      else if (currentX < 0)
+      {
+        if (canMoveHorizontallyWithSpeed(-mappedSpeed))
+        {
+          currentHorizontalSpeed = -mappedSpeed;
+          horizontalStepper.setSpeed(currentHorizontalSpeed);
+        }
+        else
+        {
+          horizontalStepper.setSpeed(0);
+          currentHorizontalSpeed = 0;
+        }
       }
       else
       {
-        // Hit a limit switch or trying to move into a limit
+        // Hit a soft limit or trying to move into one
         horizontalStepper.setSpeed(0);
         currentHorizontalSpeed = 0;
       }
@@ -655,7 +808,7 @@ void motorTask(void *parameter)
     if (fabs(currentY) > deadzone)
     {
       float normY = (fabs(currentY) - deadzone) / (1.0 - deadzone);
-      float mappedSpeed = pow(normY, speedExponent) * maxStepsPerSec;
+      float mappedSpeed = pow(normY, speedExponent) * effectiveMaxStepsPerSec;
 
       // Check limit switches before setting speed
       if (currentY > 0 && canMoveUp())
@@ -690,13 +843,12 @@ void motorTask(void *parameter)
     if (currentMillis - lastLogTime >= 500)
     {
       lastLogTime = currentMillis;
-      float horizontalPercentSpeed = (fabs(currentHorizontalSpeed) / maxStepsPerSec) * 100.0;
-      float verticalPercentSpeed = (fabs(currentVerticalSpeed) / maxStepsPerSec) * 100.0;
-      Serial.printf("Joy: X=%.3f Y=%.3f | H: %.1f%% V: %.1f%% | Limits: L=%s R=%s U=%s D=%s | H_Pos: %ld V_Pos: %ld | Trigger: %s | Cal: H=%s V=%s | Mode: %s\n",
+      float horizontalPercentSpeed = (fabs(currentHorizontalSpeed) / effectiveMaxStepsPerSec) * 100.0;
+      float verticalPercentSpeed = (fabs(currentVerticalSpeed) / effectiveMaxStepsPerSec) * 100.0;
+      Serial.printf("Joy: X=%.3f Y=%.3f | H: %.1f%% V: %.1f%% | Home:%s | TiltLimits: U=%s D=%s | H_Pos: %ld V_Pos: %ld | Trigger: %s | Cal: H=%s V=%s | Mode: %s\n",
                     currentX, currentY,
                     horizontalPercentSpeed, verticalPercentSpeed,
-                    leftLimitHit ? "HIT" : "OK",
-                    rightLimitHit ? "HIT" : "OK",
+                    isHomeSensorActive() ? "ON" : "OFF",
                     upLimitHit ? "HIT" : "OK",
                     downLimitHit ? "HIT" : "OK",
                     horizontalStepper.currentPosition(),
@@ -763,6 +915,12 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
     {
       Serial.println("Calibration requested via WebSocket");
       calibrateMotors();
+    }
+
+    if (doc.containsKey("home") && doc["home"].as<bool>())
+    {
+      Serial.println("Home requested via WebSocket");
+      homeTurret();
     }
 
     // Check for trigger commands
@@ -841,26 +999,23 @@ void setup()
   delay(1000);
   Serial.println("Starting ESP32 WebSocket and Stepper Motor Control");
 
-  // Setup limit switch pins with internal pull-up resistors
-  pinMode(LEFT_LIMIT_PIN, INPUT_PULLUP);
-  pinMode(RIGHT_LIMIT_PIN, INPUT_PULLUP);
+  // Setup sensor pins with internal pull-up resistors
+  pinMode(H_HOME_PIN, INPUT_PULLUP);
   pinMode(UP_LIMIT_PIN, INPUT_PULLUP);
   pinMode(DOWN_LIMIT_PIN, INPUT_PULLUP);
 
-  // Attach interrupts for limit switches
-  attachInterrupt(digitalPinToInterrupt(LEFT_LIMIT_PIN), leftLimitISR, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(RIGHT_LIMIT_PIN), rightLimitISR, CHANGE);
+  // Attach interrupts for sensors
+  attachInterrupt(digitalPinToInterrupt(H_HOME_PIN), homeSensorISR, CHANGE);
   attachInterrupt(digitalPinToInterrupt(UP_LIMIT_PIN), upLimitISR, CHANGE);
   attachInterrupt(digitalPinToInterrupt(DOWN_LIMIT_PIN), downLimitISR, CHANGE);
 
-  // Initialize limit switch states
-  leftLimitHit = digitalRead(LEFT_LIMIT_PIN) == LOW;
-  rightLimitHit = digitalRead(RIGHT_LIMIT_PIN) == LOW;
+  // Initialize sensor states
+  homeSensorTriggered = digitalRead(H_HOME_PIN) == LOW;
   upLimitHit = digitalRead(UP_LIMIT_PIN) == LOW;
   downLimitHit = digitalRead(DOWN_LIMIT_PIN) == LOW;
 
-  Serial.printf("Initial limit switch states - Left: %s, Right: %s, Up: %s, Down: %s\n",
-                leftLimitHit ? "HIT" : "OK", rightLimitHit ? "HIT" : "OK",
+  Serial.printf("Initial sensor states - Yaw home: %s, Up: %s, Down: %s\n",
+                homeSensorTriggered ? "ACTIVE" : "CLEAR",
                 upLimitHit ? "HIT" : "OK", downLimitHit ? "HIT" : "OK");
 
   // Check for problematic vertical limit switch configuration
@@ -868,12 +1023,14 @@ void setup()
   {
     Serial.println("WARNING: Both vertical limit switches are triggered!");
     Serial.println("This may indicate a wiring issue or mechanical problem.");
-    Serial.println("Check your UP_LIMIT_PIN (34) and DOWN_LIMIT_PIN (35) connections.");
+    Serial.println("Check your UP_LIMIT_PIN (4) and DOWN_LIMIT_PIN (5) connections.");
   }
 
   // Initialize stepper settings
-  horizontalStepper.setMaxSpeed(maxStepsPerSec);
-  verticalStepper.setMaxSpeed(maxStepsPerSec);
+  horizontalStepper.setMaxSpeed(effectiveMaxStepsPerSec);
+  verticalStepper.setMaxSpeed(effectiveMaxStepsPerSec);
+  horizontalStepper.setAcceleration(effectiveMaxStepsPerSec * 0.8);
+  verticalStepper.setAcceleration(effectiveMaxStepsPerSec * 0.8);
 
   // Initialize servo motor for trigger
   triggerServo.setPeriodHertz(50);           // Standard 50Hz servo
@@ -881,6 +1038,12 @@ void setup()
   triggerServo.write(SERVO_REST_ANGLE);      // Set to rest position
   delay(500);                                // Give servo time to reach position
   Serial.println("Trigger servo initialized at rest position");
+
+  Serial.println("Waiting 1 second before motion...");
+  delay(1000); // Safety delay after power-on
+
+  Serial.println("Running startup calibration...");
+  calibrateMotors();
 
   // Connect to WiFi
   WiFi.begin(ssid, password);
@@ -912,7 +1075,8 @@ void setup()
 
   Serial.println("System ready!");
   Serial.println("Available WebSocket commands:");
-  Serial.println("  - {\"calibrate\": true} - Calibrate motor limits");
+  Serial.println("  - {\"calibrate\": true} - Calibrate yaw home + tilt limits");
+  Serial.println("  - {\"home\": true} - Re-home yaw (hall) and recenter tilt");
   Serial.println("  - {\"fire\": \"single\"} - Fire single shot");
   Serial.println("  - {\"fire\": \"burst\"} - Fire 3-shot burst");
   Serial.println("  - {\"x\": 0.5, \"y\": 0.0} - Control turret movement (joystick mode)");
@@ -937,7 +1101,6 @@ void cancelAngularMovement()
     angularMovementInProgress = false;
 
     // Stop both motors
-    horizontalStepper.setSpeed(0);
-    verticalStepper.setSpeed(0);
+    stopAllMotion();
   }
 }

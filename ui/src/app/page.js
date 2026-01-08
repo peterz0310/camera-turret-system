@@ -2,21 +2,22 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { Joystick } from "react-joystick-component";
-import { 
-  Power, 
-  Crosshair, 
-  Target, 
-  Zap, 
-  Brain, 
-  Cpu, 
-  ChevronDown, 
-  Timer, 
-  RotateCcw, 
-  Settings, 
-  ArrowUp, 
-  ArrowDown, 
-  ArrowLeft, 
-  ArrowRight
+import {
+  Power,
+  Crosshair,
+  Target,
+  Zap,
+  Brain,
+  Cpu,
+  ChevronDown,
+  Timer,
+  RotateCcw,
+  Settings,
+  ArrowUp,
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  Home
 } from "lucide-react";
 
 const WEBSOCKET_URL = "ws://192.168.4.29/ws";
@@ -54,7 +55,7 @@ function App() {
   const [isMoving, setIsMoving] = useState(false);
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
   const [motorSettings, setMotorSettings] = useState({
-    horizontalGearRatio: 8.0,
+    horizontalGearRatio: 4.0,
     verticalGearRatio: 3.0,
     stepsPerRevolution: 200.0,
     microstepFactor: 2
@@ -226,6 +227,10 @@ function App() {
           event.preventDefault();
           handleMoveToCenter();
           break;
+        case 'r':
+          event.preventDefault();
+          handleHome();
+          break;
       }
     };
 
@@ -262,6 +267,13 @@ function App() {
 
   const handleCalibrate = () => {
     if (connected) wsRef.current?.send(JSON.stringify({ calibrate: true }));
+  };
+
+  const handleHome = () => {
+    if (connected) {
+      wsRef.current?.send(JSON.stringify({ home: true }));
+      console.log("🏠 [SYS] Home command sent");
+    }
   };
   
   const handleFireSingle = () => {
@@ -471,6 +483,10 @@ function App() {
           console.log('✅ [CALIBRATION] Calibration completed');
           requestCurrentAngles(); // Update angles after calibration
         }
+        if (data.homeComplete) {
+          console.log('✅ [SYSTEM] Home sequence completed');
+          requestCurrentAngles();
+        }
       } catch (e) {
         console.error('❌ [WS] Error parsing message:', e);
       }
@@ -563,6 +579,16 @@ function App() {
         >
           <RotateCcw className="w-5 h-5" />
           <span>Calibrate</span>
+        </button>
+
+        {/* Home Button */}
+        <button
+          onClick={handleHome}
+          disabled={!connected}
+          className={controlButtonClass}
+        >
+          <Home className="w-5 h-5" />
+          <span>Home</span>
         </button>
 
         {/* Angular Motion Controls */}
@@ -858,6 +884,7 @@ function App() {
               <div><span className="text-cyan-300">F/SPACE:</span> Single Fire</div>
               <div><span className="text-cyan-300">B/V:</span> Burst Fire</div>
               <div><span className="text-cyan-300">C:</span> Calibrate</div>
+              <div><span className="text-cyan-300">R:</span> Home</div>
               <div><span className="text-cyan-300">A:</span> Toggle AI</div>
               <div><span className="text-cyan-300">WASD/Arrows:</span> Angular Move</div>
               <div><span className="text-cyan-300">H/Home:</span> Center Position</div>
