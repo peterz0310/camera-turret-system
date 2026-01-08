@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 #include <AccelStepper.h>
 #include <ESP32Servo.h>
+#include <math.h>
 
 // WiFi and WebSocket settings
 const char *ssid = "Apt 210";
@@ -91,11 +92,14 @@ volatile bool calibrationInProgress = false;
 volatile bool angularMovementInProgress = false;
 unsigned long angularMovementStartTime = 0;
 const unsigned long ANGULAR_MOVEMENT_TIMEOUT = 10000; // 10 seconds max for angular moves
+unsigned long lastStatusSend = 0;
+const unsigned long STATUS_INTERVAL_MS = 1000;
 
 // Forward declarations
 void cancelAngularMovement();
 void homeTurret();
 void stopAllMotion();
+void sendStatus(bool movementComplete = false, bool calibrationCompleteFlag = false, bool yawHomed = false, bool tiltCalibrated = false);
 
 // Create AccelStepper instances
 AccelStepper horizontalStepper(AccelStepper::DRIVER, H_STEP_PIN, H_DIR_PIN);
@@ -165,6 +169,46 @@ float shortestDeltaDegrees(float currentDeg, float targetDeg)
     delta += 360.0f;
   }
   return delta;
+}
+
+void sendStatus(bool movementComplete, bool calibrationCompleteFlag, bool yawHomed, bool tiltCalibrated)
+{
+  if (ws.count() == 0)
+  {
+    return;
+  }
+
+  StaticJsonDocument<256> doc;
+  JsonObject status = doc.createNestedObject("status");
+  status["calibrated"] = angularPositioningEnabled;
+  status["calibrating"] = calibrationInProgress;
+  float hAngle = 0.0f, vAngle = 0.0f;
+  getCurrentAngles(hAngle, vAngle);
+  status["angles"]["horizontal"] = hAngle;
+  status["angles"]["vertical"] = vAngle;
+  status["positions"]["horizontal"] = horizontalStepper.currentPosition();
+  status["positions"]["vertical"] = verticalStepper.currentPosition();
+  status["movement"]["angularInProgress"] = angularMovementInProgress;
+  status["movement"]["isMoving"] = fabs(horizontalStepper.speed()) > 0.5f || fabs(verticalStepper.speed()) > 0.5f;
+  status["sensors"]["yawHome"] = isHomeSensorActive();
+  status["sensors"]["tiltUp"] = upLimitHit;
+  status["sensors"]["tiltDown"] = downLimitHit;
+  status["triggerActive"] = triggerActive;
+
+  if (movementComplete)
+  {
+    doc["movementComplete"] = true;
+  }
+  if (calibrationCompleteFlag)
+  {
+    doc["calibrationComplete"] = true;
+    doc["yawHomed"] = yawHomed;
+    doc["tiltCalibrated"] = tiltCalibrated;
+  }
+
+  String responseStr;
+  serializeJson(doc, responseStr);
+  ws.textAll(responseStr);
 }
 
 bool canMoveHorizontallyWithSpeed(float speed)
@@ -494,18 +538,7 @@ void calibrateMotors()
   {
     Serial.println("Calibration incomplete - check sensors/limit switches");
   }
-
-  // Notify any connected clients
-  StaticJsonDocument<128> response;
-  response["calibrationComplete"] = angularPositioningEnabled;
-  response["yawHomed"] = horizontalOk;
-  response["tiltCalibrated"] = verticalOk;
-  String responseStr;
-  serializeJson(response, responseStr);
-  if (ws.count() > 0)
-  {
-    ws.textAll(responseStr);
-  }
+  sendStatus(false, true, horizontalOk, verticalOk);
 }
 
 void homeTurret()
@@ -548,6 +581,7 @@ void homeTurret()
   }
 
   Serial.println("Homing sequence complete");
+  sendStatus(false, false, yawOk, isVerticalCalibrated);
 }
 
 // Angular motion functions
@@ -718,6 +752,7 @@ void motorTask(void *parameter)
       {
         Serial.println("Angular movement timeout - resuming joystick control");
         angularMovementInProgress = false;
+        sendStatus(true, false, false, false);
       }
       else
       {
@@ -729,6 +764,7 @@ void motorTask(void *parameter)
         {
           Serial.println("Angular movement complete - resuming joystick control");
           angularMovementInProgress = false;
+          sendStatus(true, false, false, false);
         }
         else
         {
@@ -859,6 +895,13 @@ void motorTask(void *parameter)
                     angularMovementInProgress ? "ANGULAR" : "JOYSTICK");
     }
 
+    // Periodic status broadcast to UI
+    if (currentMillis - lastStatusSend >= STATUS_INTERVAL_MS)
+    {
+      lastStatusSend = currentMillis;
+      sendStatus(false, false, false, false);
+    }
+
     // Minimal delay to yield to other tasks
     vTaskDelay(1 / portTICK_PERIOD_MS);
   }
@@ -961,11 +1004,11 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
       moveToCenter();
     }
 
-    // Check for cancel angular movement command
-    if (doc.containsKey("cancelAngularMovement") && doc["cancelAngularMovement"].as<bool>())
-    {
-      cancelAngularMovement();
-    }
+  // Check for cancel angular movement command
+  if (doc.containsKey("cancelAngularMovement") && doc["cancelAngularMovement"].as<bool>())
+  {
+    cancelAngularMovement();
+  }
 
     if (doc.containsKey("getCurrentAngles") && doc["getCurrentAngles"].as<bool>())
     {
@@ -1103,4 +1146,6 @@ void cancelAngularMovement()
     // Stop both motors
     stopAllMotion();
   }
+
+  sendStatus(false, false, false, false);
 }

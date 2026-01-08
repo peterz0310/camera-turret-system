@@ -54,6 +54,7 @@ function App() {
   const [angularStepSize, setAngularStepSize] = useState(10);
   const [isMoving, setIsMoving] = useState(false);
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
+  const [status, setStatus] = useState(null);
   const [motorSettings, setMotorSettings] = useState({
     horizontalGearRatio: 4.0,
     verticalGearRatio: 3.0,
@@ -420,12 +421,6 @@ function App() {
     }
   }
   
-  function requestCurrentAngles() {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ getCurrentAngles: true }));
-    }
-  }
-
   // Enhanced angular movement handlers
   const handleAngularMove = (h, v) => {
     if (!connected || isMoving) return;
@@ -481,11 +476,18 @@ function App() {
         }
         if (data.calibrationComplete) {
           console.log('✅ [CALIBRATION] Calibration completed');
-          requestCurrentAngles(); // Update angles after calibration
         }
         if (data.homeComplete) {
           console.log('✅ [SYSTEM] Home sequence completed');
-          requestCurrentAngles();
+        }
+        if (data.status) {
+          setStatus(data.status);
+          if (data.status.angles) {
+            setCurrentAngles(data.status.angles);
+          }
+          if (data.status.movement) {
+            setIsMoving(!!data.status.movement.angularInProgress || !!data.status.movement.isMoving);
+          }
         }
       } catch (e) {
         console.error('❌ [WS] Error parsing message:', e);
@@ -691,17 +693,6 @@ function App() {
                       <ArrowDown className="w-4 h-4" />
                     </button>
                   </div>
-                </div>
-                
-                {/* Quick Actions */}
-                <div className="border-t border-gray-600 pt-3 space-y-2">
-                  <button
-                    onClick={requestCurrentAngles}
-                    disabled={!connected}
-                    className="w-full px-3 py-1.5 bg-blue-700 hover:bg-blue-600 disabled:opacity-50 rounded text-xs font-mono transition-colors"
-                  >
-                    REFRESH POSITION
-                  </button>
                 </div>
                 
                 {/* Hotkey Help */}
