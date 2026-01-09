@@ -8,29 +8,34 @@ import {
   Target,
   Zap,
   Brain,
-  Cpu,
   ChevronDown,
-  Timer,
   RotateCcw,
   Settings,
-  ArrowUp,
-  ArrowDown,
-  ArrowLeft,
-  ArrowRight,
   Home
 } from "lucide-react";
+import { useTurretWebSocket } from "../hooks/useTurretWebSocket";
+import { AngleGauges } from "../components/AngleGauges";
+import { AngularPanel } from "../components/AngularPanel";
 
 const WEBSOCKET_URL = "ws://192.168.4.29/ws";
 const CAMERA_STREAM_BASE_URL = "http://192.168.4.57:8081";
 const CAMERA_STREAM_URL = `${CAMERA_STREAM_BASE_URL}/stream`;
 const API_URL = `${CAMERA_STREAM_BASE_URL}/api`;
-const MAX_RECONNECT_ATTEMPTS = 5;
 
 
 function App() {
-  const [connected, setConnected] = useState(false);
-  const [connecting, setConnecting] = useState(false);
-  const [connectionError, setConnectionError] = useState(null);
+  const {
+    connected,
+    connecting,
+    connectionError,
+    status,
+    currentAngles,
+    isMoving,
+    sendCommand,
+    connect: connectWebSocket,
+    disconnect: disconnectWebSocket,
+    markMoving
+  } = useTurretWebSocket(WEBSOCKET_URL);
   const [streamUrl, setStreamUrl] = useState("");
   const [isStreamLoading, setIsStreamLoading] = useState(true);
   const [streamError, setStreamError] = useState(null);
@@ -47,14 +52,10 @@ function App() {
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [fpsInfo, setFpsInfo] = useState({});
   const [fpsSliderOpen, setFpsSliderOpen] = useState(false);
-  const [currentAngles, setCurrentAngles] = useState(null);
   
   // Angular motion state
-  const [angularPanelOpen, setAngularPanelOpen] = useState(false);
   const [angularStepSize, setAngularStepSize] = useState(10);
-  const [isMoving, setIsMoving] = useState(false);
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
-  const [status, setStatus] = useState(null);
   const [motorSettings, setMotorSettings] = useState({
     horizontalGearRatio: 4.0,
     verticalGearRatio: 3.0,
@@ -62,70 +63,16 @@ function App() {
     microstepFactor: 2
   });
 
-  const wsRef = useRef(null);
-  const reconnectTimeoutRef = useRef(null);
-  const reconnectAttemptsRef = useRef(0);
   const crosshairPanelRef = useRef(null);
-  const triggerPanelRef = useRef(null);
   const aiPanelRef = useRef(null);
   const fpsSliderRef = useRef(null);
-  const angularPanelRef = useRef(null);
   const settingsPanelRef = useRef(null);
-
-  // --- WEBSOCKET LOGIC ---
-  const connectWebSocket = () => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
-    if (wsRef.current) wsRef.current.close();
-    
-    setConnecting(true);
-    setConnectionError(null);
-    
-    const socket = new WebSocket(WEBSOCKET_URL);
-    wsRef.current = socket;
-
-    socket.onopen = () => {
-      console.log("🔌 [SYS] WebSocket Link Established");
-      setConnected(true);
-      setConnecting(false);
-      reconnectAttemptsRef.current = 0;
-    };
-
-    socket.onclose = (event) => {
-      console.log(`❌ [SYS] WebSocket Link Severed (Code: ${event.code})`);
-      setConnected(false);
-      setConnecting(false);
-      if (event.code !== 1000 && reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
-        reconnectAttemptsRef.current++;
-        const delay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current - 1), 10000);
-        console.log(`[SYS] Reconnection attempt ${reconnectAttemptsRef.current} in ${delay}ms`);
-        reconnectTimeoutRef.current = setTimeout(connectWebSocket, delay);
-      } else if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
-        setConnectionError("MAX RECONNECT ATTEMPTS");
-      }
-    };
-
-    socket.onerror = (err) => {
-      console.error("[SYS] WebSocket Error:", err);
-      setConnectionError("CONNECTION FAULT");
-      setConnecting(false);
-    };
-  };
-
-  const disconnectWebSocket = () => {
-    if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-    reconnectAttemptsRef.current = MAX_RECONNECT_ATTEMPTS; // Prevent reconnection
-    if (wsRef.current) {
-      wsRef.current.close(1000, "Manual Disconnect");
-    }
-  };
 
   // --- COMPONENT LIFECYCLE & EFFECTS ---
   useEffect(() => {
     // Set the stream URL once on initial load. It won't be changed again unless retried.
     setStreamUrl(`${CAMERA_STREAM_URL}?t=${Date.now()}`);
-    connectWebSocket();
     fetchAvailableModels();
-    return () => disconnectWebSocket();
   }, []);
 
   // Fetch available AI models on load
@@ -157,9 +104,6 @@ function App() {
       }
       if (fpsSliderRef.current && !fpsSliderRef.current.contains(event.target)) {
         setFpsSliderOpen(false);
-      }
-      if (angularPanelRef.current && !angularPanelRef.current.contains(event.target)) {
-        setAngularPanelOpen(false);
       }
       if (settingsPanelRef.current && !settingsPanelRef.current.contains(event.target)) {
         setSettingsPanelOpen(false);
@@ -259,20 +203,20 @@ function App() {
   };
 
   const handleMove = ({ x, y }) => {
-    if (connected) wsRef.current?.send(JSON.stringify({ x, y }));
+    if (connected) sendCommand({ x, y });
   };
 
   const handleStop = () => {
-    if (connected) wsRef.current?.send(JSON.stringify({ x: 0, y: 0 }));
+    if (connected) sendCommand({ x: 0, y: 0 });
   };
 
   const handleCalibrate = () => {
-    if (connected) wsRef.current?.send(JSON.stringify({ calibrate: true }));
+    if (connected) sendCommand({ calibrate: true });
   };
 
   const handleHome = () => {
     if (connected) {
-      wsRef.current?.send(JSON.stringify({ home: true }));
+      sendCommand({ home: true });
       console.log("🏠 [SYS] Home command sent");
     }
   };
@@ -281,7 +225,7 @@ function App() {
     if (connected && !triggerActive) {
       setTriggerActive(true);
       setLastFireTime(Date.now());
-      wsRef.current?.send(JSON.stringify({ fire: "single" }));
+      sendCommand({ fire: "single" });
       console.log("🎯 [FIRE] Single shot command sent");
       // Reset trigger active state after a reasonable delay
       setTimeout(() => setTriggerActive(false), 1000);
@@ -292,7 +236,7 @@ function App() {
     if (connected && !triggerActive) {
       setTriggerActive(true);
       setLastFireTime(Date.now());
-      wsRef.current?.send(JSON.stringify({ fire: "burst" }));
+      sendCommand({ fire: "burst" });
       console.log("🎯 [FIRE] Burst fire command sent (3 rounds)");
       // Reset trigger active state after burst duration (1.5s + buffer)
       setTimeout(() => setTriggerActive(false), 2000);
@@ -313,7 +257,7 @@ function App() {
 
   const handleTriggerControl = () => {
     setTriggerActive((prev) => !prev);
-    if (connected) wsRef.current?.send(JSON.stringify({ trigger: !triggerActive }));
+    if (connected) sendCommand({ trigger: !triggerActive });
   };
 
   // NEW: Handles AI toggle by calling API without reloading the stream
@@ -403,21 +347,18 @@ function App() {
 
   // --- ANGULAR MOTION HELPERS ---
   function sendMoveByAngle(h, v) {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      setIsMoving(true);
-      wsRef.current.send(JSON.stringify({ moveByAngle: { horizontal: h, vertical: v } }));
+    if (connected) {
+      markMoving();
+      sendCommand({ moveByAngle: { horizontal: h, vertical: v } });
       console.log(`🎯 [ANGULAR] Moving by H:${h}°, V:${v}°`);
-      // Reset moving state after a reasonable delay
-      setTimeout(() => setIsMoving(false), 1000);
     }
   }
   
   function sendMoveToCenter() {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      setIsMoving(true);
-      wsRef.current.send(JSON.stringify({ moveToCenter: true }));
+    if (connected) {
+      markMoving();
+      sendCommand({ moveToCenter: true });
       console.log('🎯 [ANGULAR] Moving to center position');
-      setTimeout(() => setIsMoving(false), 2000); // Center moves might take longer
     }
   }
   
@@ -457,102 +398,6 @@ function App() {
       // Update local state anyway for testing
       setMotorSettings(newSettings);
     }
-  };
-
-  // Listen for current angle responses and other feedback
-  useEffect(() => {
-    if (!wsRef.current) return;
-    const socket = wsRef.current;
-    function handleMessage(event) {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.currentAngles) {
-          setCurrentAngles(data.currentAngles);
-          console.log('📐 [ANGULAR] Current angles received:', data.currentAngles);
-        }
-        if (data.movementComplete) {
-          setIsMoving(false);
-          console.log('✅ [ANGULAR] Movement completed');
-        }
-        if (data.calibrationComplete) {
-          console.log('✅ [CALIBRATION] Calibration completed');
-        }
-        if (data.homeComplete) {
-          console.log('✅ [SYSTEM] Home sequence completed');
-        }
-        if (data.status) {
-          setStatus(data.status);
-          if (data.status.angles) {
-            setCurrentAngles(data.status.angles);
-          }
-          if (data.status.movement) {
-            setIsMoving(!!data.status.movement.angularInProgress || !!data.status.movement.isMoving);
-          }
-        }
-      } catch (e) {
-        console.error('❌ [WS] Error parsing message:', e);
-      }
-    }
-    socket.addEventListener('message', handleMessage);
-    return () => socket.removeEventListener('message', handleMessage);
-  }, [connected]);
-
-  // --- ANGLE VISUALS ---
-  const yawAngleDeg = currentAngles ? ((currentAngles.horizontal % 360) + 360) % 360 : 0;
-  const tiltAngleDeg = currentAngles ? Math.max(-90, Math.min(90, currentAngles.vertical)) : 0;
-
-  const renderYawGauge = () => {
-    const size = 180;
-    const center = size / 2;
-    const radius = size / 2 - 12;
-    const rad = ((yawAngleDeg - 90) * Math.PI) / 180; // 0° points up
-    const x = center + radius * Math.cos(rad);
-    const y = center + radius * Math.sin(rad);
-
-    return (
-      <div className="flex flex-col items-center gap-2">
-        <div className="text-xs text-cyan-300 uppercase tracking-wider">Yaw</div>
-        <svg width={size} height={size} className="text-cyan-400">
-          <circle cx={center} cy={center} r={radius} className="stroke-cyan-700/60" strokeWidth="2" fill="none" />
-          <line x1={center} y1={center} x2={x} y2={y} stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-          <circle cx={center} cy={center} r="4" fill="currentColor" />
-          <text x={center} y={center + 6} textAnchor="middle" className="fill-cyan-300 text-sm font-mono">
-            {yawAngleDeg.toFixed(1)}°
-          </text>
-        </svg>
-      </div>
-    );
-  };
-
-  const renderTiltGauge = () => {
-    const width = 200;
-    const height = 110;
-    const centerX = width / 2;
-    const centerY = height - 10;
-    const radius = width / 2 - 12;
-    const clampedTilt = tiltAngleDeg;
-    const rad = ((clampedTilt + 90) * Math.PI) / 180; // -90 left, +90 right
-    const x = centerX + radius * Math.cos(rad);
-    const y = centerY - radius * Math.sin(rad);
-
-    return (
-      <div className="flex flex-col items-center gap-2">
-        <div className="text-xs text-cyan-300 uppercase tracking-wider">Tilt</div>
-        <svg width={width} height={height} className="text-cyan-400">
-          <path
-            d={`M ${centerX - radius} ${centerY} A ${radius} ${radius} 0 0 1 ${centerX + radius} ${centerY}`}
-            className="stroke-cyan-700/60"
-            strokeWidth="2"
-            fill="none"
-          />
-          <line x1={centerX} y1={centerY} x2={x} y2={y} stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-          <circle cx={centerX} cy={centerY} r="4" fill="currentColor" />
-          <text x={centerX} y={centerY - radius - 6} textAnchor="middle" className="fill-cyan-300 text-sm font-mono">
-            {clampedTilt.toFixed(1)}°
-          </text>
-        </svg>
-      </div>
-    );
   };
 
   // --- STYLING & CLASSES ---
@@ -652,118 +497,15 @@ function App() {
         </button>
 
         {/* Angular Motion Controls */}
-        <div ref={angularPanelRef} className="relative pointer-events-auto">
-          <button
-            onClick={() => setAngularPanelOpen(!angularPanelOpen)}
-            className={`${controlButtonClass} ${isMoving ? 'border-yellow-400/50 text-yellow-400' : ''}`}
-          >
-            <RotateCcw className="w-5 h-5" />
-            <span>{isMoving ? 'MOVING...' : 'Angular'}</span>
-          </button>
-          
-          {angularPanelOpen && (
-            <div className="absolute bottom-full left-0 mb-3 bg-black/70 border border-cyan-500/30 rounded-md p-4 w-80 shadow-2xl backdrop-blur-md animate-fadeIn">
-              <div className="space-y-4">
-                <h3 className="text-sm font-bold text-cyan-400 mb-2 uppercase tracking-wider">Angular Positioning</h3>
-                
-                {/* Current Position Display */}
-                {currentAngles && (
-                  <div className="bg-gray-800/50 p-3 rounded border border-gray-600">
-                    <div className="text-xs text-gray-400 mb-1">CURRENT POSITION</div>
-                    <div className="flex justify-between text-sm">
-                      <span>H: {currentAngles.horizontal.toFixed(2)}°</span>
-                      <span>V: {currentAngles.vertical.toFixed(2)}°</span>
-                    </div>
-                  </div>
-                )}
-                
-                {/* Step Size Control */}
-                <div className="space-y-2">
-                  <label className="block text-xs text-cyan-400 uppercase tracking-wider">
-                    Step Size: {angularStepSize}°
-                  </label>
-                  <div className="flex gap-2">
-                    {[1, 5, 10, 15, 30, 45].map((size) => (
-                      <button
-                        key={size}
-                        onClick={() => handleStepSizeChange(size)}
-                        className={`px-2 py-1 text-xs rounded transition-colors ${
-                          angularStepSize === size
-                            ? 'bg-cyan-600 text-white'
-                            : 'bg-gray-700 hover:bg-gray-600 text-gray-300'
-                        }`}
-                      >
-                        {size}°
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                
-                {/* Direction Controls */}
-                <div className="space-y-3">
-                  <div className="text-xs text-cyan-400 uppercase tracking-wider">Direction Controls</div>
-                  
-                  {/* Vertical Controls */}
-                  <div className="flex justify-center">
-                    <button
-                      onClick={() => handleAngularMove(0, angularStepSize)}
-                      disabled={!connected || isMoving}
-                      className="p-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded transition-colors"
-                    >
-                      <ArrowUp className="w-4 h-4" />
-                    </button>
-                  </div>
-                  
-                  {/* Horizontal Controls */}
-                  <div className="flex justify-center gap-4">
-                    <button
-                      onClick={() => handleAngularMove(-angularStepSize, 0)}
-                      disabled={!connected || isMoving}
-                      className="p-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded transition-colors"
-                    >
-                      <ArrowLeft className="w-4 h-4" />
-                    </button>
-                    
-                    <button
-                      onClick={handleMoveToCenter}
-                      disabled={!connected || isMoving}
-                      className="px-3 py-2 bg-cyan-700 hover:bg-cyan-600 disabled:opacity-50 rounded text-xs font-mono transition-colors"
-                    >
-                      CENTER
-                    </button>
-                    
-                    <button
-                      onClick={() => handleAngularMove(angularStepSize, 0)}
-                      disabled={!connected || isMoving}
-                      className="p-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded transition-colors"
-                    >
-                      <ArrowRight className="w-4 h-4" />
-                    </button>
-                  </div>
-                  
-                  {/* Down Button */}
-                  <div className="flex justify-center">
-                    <button
-                      onClick={() => handleAngularMove(0, -angularStepSize)}
-                      disabled={!connected || isMoving}
-                      className="p-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded transition-colors"
-                    >
-                      <ArrowDown className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-                
-                {/* Hotkey Help */}
-                <div className="border-t border-gray-600 pt-2">
-                  <div className="text-xs text-gray-500">
-                    <div className="font-mono">WASD/Arrow Keys: Move</div>
-                    <div className="font-mono">H/Home: Center</div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
+        <AngularPanel
+          connected={connected}
+          isMoving={isMoving}
+          currentAngles={currentAngles}
+          onMove={handleAngularMove}
+          onCenter={handleMoveToCenter}
+          stepSize={angularStepSize}
+          onStepSizeChange={handleStepSizeChange}
+        />
 
         {/* AI Detection Controls - Combined Menu */}
         <div className="relative pointer-events-auto" ref={aiPanelRef}>
@@ -1143,10 +885,7 @@ function App() {
 
       {/* --- ANGLE GAUGES --- */}
       <div className="absolute bottom-6 left-6 z-30 pointer-events-auto">
-        <div className="bg-black/50 border border-cyan-500/30 rounded-sm px-4 py-3 shadow-lg backdrop-blur-sm flex gap-8">
-          {renderYawGauge()}
-          {renderTiltGauge()}
-        </div>
+        <AngleGauges angles={currentAngles} />
       </div>
 
       {/* --- JOYSTICK --- */}
