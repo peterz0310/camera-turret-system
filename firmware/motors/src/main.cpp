@@ -402,14 +402,39 @@ bool calibrateVerticalMotor()
   bool upFound = false;
   unsigned long startTime = millis();
 
-  // If we're already at down limit, move away first
+  // If we're already at a limit (likely leaning), move gently off that switch first
   if (downLimitHit)
   {
-    Serial.println("Already at down limit, moving away...");
+    Serial.println("Down limit active at start, nudging up to clear...");
     verticalStepper.setSpeed(maxStepsPerSec * 0.2);
     while (downLimitHit)
     {
       verticalStepper.runSpeed();
+      if (millis() - startTime > CALIBRATION_TIMEOUT_MS)
+      {
+        Serial.println("Timeout while clearing down limit");
+        verticalStepper.setSpeed(0);
+        return false;
+      }
+      delay(1);
+    }
+    verticalStepper.setSpeed(0);
+    delay(100);
+  }
+
+  if (upLimitHit)
+  {
+    Serial.println("Up limit active at start, nudging down to clear...");
+    verticalStepper.setSpeed(-maxStepsPerSec * 0.2);
+    while (upLimitHit)
+    {
+      verticalStepper.runSpeed();
+      if (millis() - startTime > CALIBRATION_TIMEOUT_MS)
+      {
+        Serial.println("Timeout while clearing up limit");
+        verticalStepper.setSpeed(0);
+        return false;
+      }
       delay(1);
     }
     verticalStepper.setSpeed(0);
@@ -1074,6 +1099,7 @@ void setup()
   verticalStepper.setMaxSpeed(effectiveMaxStepsPerSec);
   horizontalStepper.setAcceleration(effectiveMaxStepsPerSec * 0.8);
   verticalStepper.setAcceleration(effectiveMaxStepsPerSec * 0.8);
+  verticalStepper.setPinsInverted(true, false, false); // Reverse tilt direction due to gear change
 
   // Initialize servo motor for trigger
   triggerServo.setPeriodHertz(50);           // Standard 50Hz servo
