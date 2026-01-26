@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const MAX_RECONNECT_ATTEMPTS = 5;
+const MAX_RECONNECT_ATTEMPTS = Infinity;
+const RECONNECT_BASE_DELAY_MS = 300;
+const RECONNECT_MAX_DELAY_MS = 3000;
 
 export function useTurretWebSocket(url) {
   const [connected, setConnected] = useState(false);
@@ -46,11 +48,16 @@ export function useTurretWebSocket(url) {
     socket.onclose = (event) => {
       setConnected(false);
       setConnecting(false);
-      if (event.code !== 1000 && reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
+      if (event.code === 1000) return; // Clean close (manual disconnect/cleanup)
+
+      if (reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
         reconnectAttemptsRef.current++;
-        const delay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current - 1), 10000);
+        const delay = Math.min(
+          RECONNECT_BASE_DELAY_MS * Math.pow(2, reconnectAttemptsRef.current - 1),
+          RECONNECT_MAX_DELAY_MS
+        );
         reconnectTimeoutRef.current = setTimeout(connect, delay);
-      } else if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
+      } else {
         setConnectionError("MAX RECONNECT ATTEMPTS");
       }
     };
@@ -58,6 +65,7 @@ export function useTurretWebSocket(url) {
     socket.onerror = () => {
       setConnectionError("CONNECTION FAULT");
       setConnecting(false);
+      socket.close(4001, "error");
     };
 
     socket.onmessage = (event) => {

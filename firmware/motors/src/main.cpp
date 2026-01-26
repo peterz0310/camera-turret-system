@@ -20,20 +20,21 @@ const int H_HOME_PIN = 32; // Hall-effect sensor for yaw home (active LOW)
 // Vertical stepper motor settings (up/down - tilt)
 const int V_STEP_PIN = 14;
 const int V_DIR_PIN = 12;
-const int UP_LIMIT_PIN = 4;
-const int DOWN_LIMIT_PIN = 5;
+const int UP_LIMIT_PIN = 5;
+const int DOWN_LIMIT_PIN = 4;
 
 const int microstepFactor = 2;
-const int baseMaxStepsPerSec = 500; // Lowered to keep motion safe
+const int baseMaxStepsPerSec = 500;
 const int maxStepsPerSec = baseMaxStepsPerSec * microstepFactor;
-const float joystickSpeedLimit = 0.6; // Clamp joystick speed to 60% of max
+const float joystickSpeedLimit = 0.6;     // Clamp joystick speed to 60% of max
 const float calibrationSpeedFactor = 0.3; // Fraction of max speed during calibration
 const float effectiveMaxStepsPerSec = maxStepsPerSec * joystickSpeedLimit;
 const float deadzone = 0.1;
 const float speedExponent = 1.0; // Control speed curve: 1.0 = linear, 2.0 = exponential
 const unsigned long CALIBRATION_TIMEOUT_MS = 15000;
+const unsigned long CONTROL_TIMEOUT_MS = 750; // Fail-safe: stop motors if joystick commands go silent
 
-// Angular motion settings - configurable gear ratios and motor specs
+// Angular motion settings
 const float HORIZONTAL_GEAR_RATIO = 4.0;  // 4:1 gear ratio for yaw
 const float VERTICAL_GEAR_RATIO = 3.0;    // 3:1 gear ratio for tilt
 const float STEPS_PER_REVOLUTION = 200.0; // Standard stepper motor (1.8° per step)
@@ -51,11 +52,13 @@ long verticalCenterPosition = 0;
 bool angularPositioningEnabled = false;
 
 // Servo motor settings for trigger
-const int SERVO_PIN = 27;            // GPIO pin for servo control
-const int SERVO_REST_ANGLE = 0;      // Rest position (trigger not pulled)
-const int SERVO_FIRE_ANGLE = 90;     // Fire position (trigger pulled)
-const int TRIGGER_DELAY_MS = 150;    // How long to hold trigger pulled
-const int BURST_SHOT_DELAY_MS = 500; // Delay between shots in burst mode
+const int SERVO_PIN = 27;         // GPIO pin for servo control
+const int SERVO_REST_ANGLE = 0;   // Rest position (trigger not pulled)
+const int SERVO_FIRE_ANGLE = 90;  // Fire position (trigger pulled)
+const int TRIGGER_DELAY_MS = 150; // How long to hold trigger pulled
+const int BURST_SHOT_COUNT = 3;
+const unsigned long BURST_SHOT_INTERVAL_MS = 500;
+const unsigned long BURST_TOTAL_TIMEOUT_MS = BURST_SHOT_COUNT * BURST_SHOT_INTERVAL_MS;
 
 // Servo and trigger control variables
 Servo triggerServo;
@@ -84,6 +87,7 @@ volatile bool homeSensorTriggered = false;
 // Global joystick values (updated via WebSocket)
 volatile float joystickX = 0.0;
 volatile float joystickY = 0.0;
+volatile unsigned long lastControlMessageTime = 0;
 
 // Calibration control flag
 volatile bool calibrationInProgress = false;
@@ -100,6 +104,7 @@ void cancelAngularMovement();
 void homeTurret();
 void stopAllMotion();
 void sendStatus(bool movementComplete = false, bool calibrationCompleteFlag = false, bool yawHomed = false, bool tiltCalibrated = false);
+void getCurrentAngles(float &horizontalAngle, float &verticalAngle);
 
 // Create AccelStepper instances
 AccelStepper horizontalStepper(AccelStepper::DRIVER, H_STEP_PIN, H_DIR_PIN);
@@ -211,12 +216,6 @@ void sendStatus(bool movementComplete, bool calibrationCompleteFlag, bool yawHom
   ws.textAll(responseStr);
 }
 
-bool canMoveHorizontallyWithSpeed(float speed)
-{
-  // With slip ring installed, yaw can rotate continuously; no soft stops
-  return true;
-}
-
 void stopAllMotion()
 {
   horizontalStepper.setSpeed(0);
@@ -291,7 +290,8 @@ void startBurstFire()
   burstShotCount = 0;
   burstStartTime = millis();
   nextBurstShotTime = burstStartTime; // First shot fires immediately
-  Serial.println("Starting burst fire mode (3 shots in 1.5 seconds)");
+  Serial.printf("Starting burst fire mode (%d shots, %lums interval)\n",
+                BURST_SHOT_COUNT, BURST_SHOT_INTERVAL_MS);
 }
 
 void updateBurstFire()
@@ -302,19 +302,19 @@ void updateBurstFire()
   unsigned long currentTime = millis();
 
   // Check if we can fire the next shot (trigger must be ready)
-  if (burstShotCount < 3 && !triggerActive && currentTime >= nextBurstShotTime)
+  if (burstShotCount < BURST_SHOT_COUNT && !triggerActive && currentTime >= nextBurstShotTime)
   {
-    Serial.printf("Firing burst shot %d/3\n", burstShotCount + 1);
+    Serial.printf("Firing burst shot %d/%d\n", burstShotCount + 1, BURST_SHOT_COUNT);
     startTriggerPull();
     burstShotCount++;
 
-    // Schedule next shot 500ms later
-    nextBurstShotTime = currentTime + 500;
+    // Schedule next shot based on configured interval
+    nextBurstShotTime = currentTime + BURST_SHOT_INTERVAL_MS;
   }
 
-  // End burst mode after 1.5 seconds or all shots fired
+  // End burst mode after timeout or all shots fired
   unsigned long elapsedTime = currentTime - burstStartTime;
-  if (elapsedTime >= 1500 || burstShotCount >= 3)
+  if (elapsedTime >= BURST_TOTAL_TIMEOUT_MS || burstShotCount >= BURST_SHOT_COUNT)
   {
     inBurstMode = false;
     Serial.println("Burst fire complete");
@@ -768,6 +768,28 @@ void motorTask(void *parameter)
     // Handle non-blocking trigger control
     updateTrigger();
 
+    // Fail-safe: stop motors if control input goes quiet while in joystick mode
+    static bool controlTimeoutActive = false;
+    unsigned long now = millis();
+    if (!angularMovementInProgress && (now - lastControlMessageTime) > CONTROL_TIMEOUT_MS)
+    {
+      if (!controlTimeoutActive &&
+          (fabs(joystickX) > deadzone || fabs(joystickY) > deadzone ||
+           fabs(horizontalStepper.speed()) > 0.5f || fabs(verticalStepper.speed()) > 0.5f))
+      {
+        joystickX = 0.0f;
+        joystickY = 0.0f;
+        stopAllMotion();
+        Serial.println("Control timeout - stopping motors");
+        sendStatus(false, false, false, false);
+      }
+      controlTimeoutActive = true;
+    }
+    else if (controlTimeoutActive)
+    {
+      controlTimeoutActive = false;
+    }
+
     // Check if angular movement is in progress
     if (angularMovementInProgress)
     {
@@ -825,39 +847,8 @@ void motorTask(void *parameter)
       float normX = (fabs(currentX) - deadzone) / (1.0 - deadzone);
       float mappedSpeed = pow(normX, speedExponent) * effectiveMaxStepsPerSec;
 
-      // Check yaw soft limits before setting speed
-      if (currentX > 0)
-      {
-        if (canMoveHorizontallyWithSpeed(mappedSpeed))
-        {
-          currentHorizontalSpeed = mappedSpeed;
-          horizontalStepper.setSpeed(currentHorizontalSpeed);
-        }
-        else
-        {
-          horizontalStepper.setSpeed(0);
-          currentHorizontalSpeed = 0;
-        }
-      }
-      else if (currentX < 0)
-      {
-        if (canMoveHorizontallyWithSpeed(-mappedSpeed))
-        {
-          currentHorizontalSpeed = -mappedSpeed;
-          horizontalStepper.setSpeed(currentHorizontalSpeed);
-        }
-        else
-        {
-          horizontalStepper.setSpeed(0);
-          currentHorizontalSpeed = 0;
-        }
-      }
-      else
-      {
-        // Hit a soft limit or trying to move into one
-        horizontalStepper.setSpeed(0);
-        currentHorizontalSpeed = 0;
-      }
+      currentHorizontalSpeed = (currentX > 0) ? mappedSpeed : -mappedSpeed;
+      horizontalStepper.setSpeed(currentHorizontalSpeed);
     }
     else
     {
@@ -939,9 +930,22 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
   {
   case WS_EVT_CONNECT:
     Serial.printf("WebSocket client connected: %u\n", client->id());
+    lastControlMessageTime = millis();
+    joystickX = 0.0f;
+    joystickY = 0.0f;
+    stopAllMotion();
     break;
   case WS_EVT_DISCONNECT:
     Serial.printf("WebSocket client disconnected: %u\n", client->id());
+    joystickX = 0.0f;
+    joystickY = 0.0f;
+    angularMovementInProgress = false;
+    stopAllMotion();
+    horizontalStepper.stop();
+    verticalStepper.stop();
+    lastControlMessageTime = millis();
+    Serial.println("Motion halted due to WebSocket disconnect");
+    sendStatus(false, false, false, false);
     break;
   case WS_EVT_DATA:
   {
@@ -956,6 +960,7 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
     if (doc.containsKey("x"))
     {
       joystickX = doc["x"].as<float>();
+      lastControlMessageTime = millis();
       Serial.printf("WebSocket X received: %.3f\n", joystickX);
 
       // Cancel angular movement if significant joystick input is detected
@@ -968,6 +973,7 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
     if (doc.containsKey("y"))
     {
       joystickY = doc["y"].as<float>();
+      lastControlMessageTime = millis();
       Serial.printf("WebSocket Y received: %.3f\n", joystickY);
 
       // Cancel angular movement if significant joystick input is detected
@@ -1029,11 +1035,11 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
       moveToCenter();
     }
 
-  // Check for cancel angular movement command
-  if (doc.containsKey("cancelAngularMovement") && doc["cancelAngularMovement"].as<bool>())
-  {
-    cancelAngularMovement();
-  }
+    // Check for cancel angular movement command
+    if (doc.containsKey("cancelAngularMovement") && doc["cancelAngularMovement"].as<bool>())
+    {
+      cancelAngularMovement();
+    }
 
     if (doc.containsKey("getCurrentAngles") && doc["getCurrentAngles"].as<bool>())
     {
@@ -1066,6 +1072,7 @@ void setup()
   Serial.begin(115200);
   delay(1000);
   Serial.println("Starting ESP32 WebSocket and Stepper Motor Control");
+  lastControlMessageTime = millis();
 
   // Setup sensor pins with internal pull-up resistors
   pinMode(H_HOME_PIN, INPUT_PULLUP);
@@ -1147,7 +1154,7 @@ void setup()
   Serial.println("  - {\"calibrate\": true} - Calibrate yaw home + tilt limits");
   Serial.println("  - {\"home\": true} - Re-home yaw (hall) and recenter tilt");
   Serial.println("  - {\"fire\": \"single\"} - Fire single shot");
-  Serial.println("  - {\"fire\": \"burst\"} - Fire 3-shot burst");
+  Serial.printf("  - {\"fire\": \"burst\"} - Fire %d-shot burst\n", BURST_SHOT_COUNT);
   Serial.println("  - {\"x\": 0.5, \"y\": 0.0} - Control turret movement (joystick mode)");
   Serial.println("  - {\"moveToAngle\": {\"horizontal\": 45.0, \"vertical\": -10.0}} - Move to absolute angles");
   Serial.println("  - {\"moveByAngle\": {\"horizontal\": 5.0, \"vertical\": 2.0}} - Move by relative angles");
