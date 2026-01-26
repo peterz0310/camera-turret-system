@@ -1106,7 +1106,7 @@ void setup()
   verticalStepper.setMaxSpeed(effectiveMaxStepsPerSec);
   horizontalStepper.setAcceleration(effectiveMaxStepsPerSec * 0.8);
   verticalStepper.setAcceleration(effectiveMaxStepsPerSec * 0.8);
-  verticalStepper.setPinsInverted(true, false, false); // Reverse tilt direction due to gear change
+  verticalStepper.setPinsInverted(false, false, false); // Tilt direction configuration
 
   // Initialize servo motor for trigger
   triggerServo.setPeriodHertz(50);           // Standard 50Hz servo
