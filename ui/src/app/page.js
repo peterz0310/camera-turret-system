@@ -9,16 +9,17 @@ import {
   Zap,
   Brain,
   ChevronDown,
-  RotateCcw,
-  Settings,
   Home
 } from "lucide-react";
 import { useTurretWebSocket } from "../hooks/useTurretWebSocket";
 import { AngleGauges } from "../components/AngleGauges";
 import { AngularPanel } from "../components/AngularPanel";
 
-const WEBSOCKET_URL = "ws://192.168.4.29/ws";
-const CAMERA_STREAM_BASE_URL = "http://192.168.4.57:8081";
+// Allow runtime configuration while keeping current values as defaults.
+const WEBSOCKET_URL =
+  process.env.NEXT_PUBLIC_WEBSOCKET_URL || "ws://192.168.4.29/ws";
+const CAMERA_STREAM_BASE_URL =
+  process.env.NEXT_PUBLIC_CAMERA_STREAM_BASE_URL || "http://192.168.4.57:8081";
 const CAMERA_STREAM_URL = `${CAMERA_STREAM_BASE_URL}/stream`;
 const API_URL = `${CAMERA_STREAM_BASE_URL}/api`;
 
@@ -55,18 +56,10 @@ function App() {
   
   // Angular motion state
   const [angularStepSize, setAngularStepSize] = useState(10);
-  const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
-  const [motorSettings, setMotorSettings] = useState({
-    horizontalGearRatio: 4.0,
-    verticalGearRatio: 3.0,
-    stepsPerRevolution: 200.0,
-    microstepFactor: 2
-  });
 
   const crosshairPanelRef = useRef(null);
   const aiPanelRef = useRef(null);
   const fpsSliderRef = useRef(null);
-  const settingsPanelRef = useRef(null);
 
   // --- COMPONENT LIFECYCLE & EFFECTS ---
   useEffect(() => {
@@ -105,9 +98,6 @@ function App() {
       if (fpsSliderRef.current && !fpsSliderRef.current.contains(event.target)) {
         setFpsSliderOpen(false);
       }
-      if (settingsPanelRef.current && !settingsPanelRef.current.contains(event.target)) {
-        setSettingsPanelOpen(false);
-      }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
@@ -128,10 +118,6 @@ function App() {
         case 'v':
           event.preventDefault();
           handleFireBurst();
-          break;
-        case 'c':
-          event.preventDefault();
-          handleCalibrate();
           break;
         case 'a':
           event.preventDefault();
@@ -208,10 +194,6 @@ function App() {
 
   const handleStop = () => {
     if (connected) sendCommand({ x: 0, y: 0 });
-  };
-
-  const handleCalibrate = () => {
-    if (connected) sendCommand({ calibrate: true });
   };
 
   const handleHome = () => {
@@ -378,28 +360,6 @@ function App() {
     console.log(`🎯 [ANGULAR] Step size changed to ${newSize}°`);
   };
 
-  const handleMotorSettingsUpdate = async (newSettings) => {
-    try {
-      // Send settings to firmware if there's an API endpoint for it
-      const response = await fetch(`${API_URL}/motor-settings`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newSettings)
-      });
-      
-      if (response.ok) {
-        setMotorSettings(newSettings);
-        console.log('🔧 [SETTINGS] Motor settings updated:', newSettings);
-      } else {
-        console.error('❌ [SETTINGS] Failed to update motor settings');
-      }
-    } catch (error) {
-      console.error('❌ [SETTINGS] Error updating motor settings:', error);
-      // Update local state anyway for testing
-      setMotorSettings(newSettings);
-    }
-  };
-
   // --- STYLING & CLASSES ---
   const controlButtonClass = "flex items-center gap-2 px-3 py-1.5 border border-cyan-400/30 bg-black/30 text-cyan-400 rounded-sm hover:bg-cyan-400/20 hover:text-cyan-300 transition-all duration-300 backdrop-blur-sm text-xs uppercase font-mono tracking-wider cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-black/30 disabled:hover:text-cyan-400";
   const crosshairOptionClass = (isActive) =>
@@ -476,16 +436,6 @@ function App() {
             )}
         </div>
         
-        {/* Calibration Button */}
-        <button
-          onClick={handleCalibrate}
-          disabled={!connected}
-          className={controlButtonClass}
-        >
-          <RotateCcw className="w-5 h-5" />
-          <span>Calibrate</span>
-        </button>
-
         {/* Home Button */}
         <button
           onClick={handleHome}
@@ -626,33 +576,6 @@ function App() {
           )}
         </div>
 
-        {/* Fire Control Panel */}
-        <div className="flex flex-col gap-2 pointer-events-auto">
-          <button
-            onClick={handleFireSingle}
-            disabled={!connected || triggerActive}
-            className={`${controlButtonClass} ${triggerActive ? 'opacity-50 cursor-not-allowed' : 'hover:border-orange-400/50 hover:text-orange-300'}`}
-          >
-            <Target className="w-5 h-5" />
-            <span>Single Shot</span>
-          </button>
-          
-          <button
-            onClick={handleFireBurst}
-            disabled={!connected || triggerActive}
-            className={`${controlButtonClass} ${triggerActive ? 'opacity-50 cursor-not-allowed' : 'hover:border-red-400/50 hover:text-red-300'}`}
-          >
-            <Zap className="w-5 h-5" />
-            <span>Burst Fire</span>
-          </button>
-        </div>
-
-        {/* Trigger Status */}
-        {triggerActive && (
-          <div className="bg-red-900/50 border border-red-500/50 px-3 py-1.5 rounded-sm text-xs uppercase font-mono tracking-wider backdrop-blur-sm animate-pulse pointer-events-auto">
-            <span className="text-red-400">⚡ FIRING</span>
-          </div>
-        )}
       </div>
 
 
@@ -674,7 +597,6 @@ function App() {
             <div className="text-xs font-mono text-gray-400 space-y-0.5">
               <div><span className="text-cyan-300">F/SPACE:</span> Single Fire</div>
               <div><span className="text-cyan-300">B/V:</span> Burst Fire</div>
-              <div><span className="text-cyan-300">C:</span> Calibrate</div>
               <div><span className="text-cyan-300">R:</span> Home</div>
               <div><span className="text-cyan-300">A:</span> Toggle AI</div>
               <div><span className="text-cyan-300">WASD/Arrows:</span> Angular Move</div>
@@ -720,102 +642,6 @@ function App() {
             <Power className="w-5 h-5" />
             <span>{connected ? "Terminate Link" : "Establish Link"}</span>
         </button>
-      </div>
-
-      {/* --- MOTOR SETTINGS PANEL (Bottom Right) --- */}
-      <div className="absolute bottom-8 right-8 z-30 pointer-events-auto">
-        <div className="relative" ref={settingsPanelRef}>
-          <button
-            onClick={() => setSettingsPanelOpen(!settingsPanelOpen)}
-            className={controlButtonClass}
-          >
-            <Settings className="w-4 h-4" />
-            <span>Motor Config</span>
-          </button>
-
-          {settingsPanelOpen && (
-            <div className="absolute bottom-full right-0 mb-3 w-72 bg-gray-800/95 backdrop-blur-sm border border-cyan-400/30 rounded-sm shadow-lg z-50">
-              <div className="p-3 space-y-4">
-                <h4 className="text-sm uppercase font-mono tracking-wider text-cyan-400">Motor Configuration</h4>
-                
-                <div className="space-y-3">
-                  <div>
-                    <label className="block text-xs text-gray-400 mb-1">Horizontal Gear Ratio</label>
-                    <input
-                      type="number"
-                      step="0.1"
-                      value={motorSettings.horizontalGearRatio}
-                      onChange={(e) => setMotorSettings({
-                        ...motorSettings,
-                        horizontalGearRatio: parseFloat(e.target.value)
-                      })}
-                      className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm"
-                    />
-                  </div>
-                  
-                  <div>
-                    <label className="block text-xs text-gray-400 mb-1">Vertical Gear Ratio</label>
-                    <input
-                      type="number"
-                      step="0.1"
-                      value={motorSettings.verticalGearRatio}
-                      onChange={(e) => setMotorSettings({
-                        ...motorSettings,
-                        verticalGearRatio: parseFloat(e.target.value)
-                      })}
-                      className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm"
-                    />
-                  </div>
-                  
-                  <div>
-                    <label className="block text-xs text-gray-400 mb-1">Steps Per Revolution</label>
-                    <input
-                      type="number"
-                      value={motorSettings.stepsPerRevolution}
-                      onChange={(e) => setMotorSettings({
-                        ...motorSettings,
-                        stepsPerRevolution: parseInt(e.target.value)
-                      })}
-                      className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm"
-                    />
-                  </div>
-                  
-                  <div>
-                    <label className="block text-xs text-gray-400 mb-1">Microstep Factor</label>
-                    <select
-                      value={motorSettings.microstepFactor}
-                      onChange={(e) => setMotorSettings({
-                        ...motorSettings,
-                        microstepFactor: parseInt(e.target.value)
-                      })}
-                      className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm"
-                    >
-                      <option value={1}>1 (Full Step)</option>
-                      <option value={2}>2 (Half Step)</option>
-                      <option value={4}>4 (Quarter Step)</option>
-                      <option value={8}>8 (Eighth Step)</option>
-                      <option value={16}>16 (Sixteenth Step)</option>
-                    </select>
-                  </div>
-                </div>
-                
-                <div className="border-t border-gray-600 pt-3">
-                  <button
-                    onClick={() => handleMotorSettingsUpdate(motorSettings)}
-                    className="w-full px-3 py-2 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-sm font-mono transition-colors"
-                  >
-                    UPDATE SETTINGS
-                  </button>
-                </div>
-                
-                <div className="text-xs text-gray-500 font-mono">
-                  <div>Current H Steps/°: {((motorSettings.stepsPerRevolution * motorSettings.microstepFactor * motorSettings.horizontalGearRatio) / 360).toFixed(2)}</div>
-                  <div>Current V Steps/°: {((motorSettings.stepsPerRevolution * motorSettings.microstepFactor * motorSettings.verticalGearRatio) / 360).toFixed(2)}</div>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
       </div>
 
       {/* --- CAMERA FEED --- */}
@@ -885,12 +711,12 @@ function App() {
 
       {/* --- ANGLE GAUGES --- */}
       <div className="absolute bottom-6 left-6 z-30 pointer-events-auto">
-        <AngleGauges angles={currentAngles} />
+        <AngleGauges angles={currentAngles} status={status} />
       </div>
 
-      {/* --- JOYSTICK --- */}
+      {/* --- JOYSTICK + FIRE CONTROLS --- */}
       {connected && (
-        <div className="absolute right-16 top-1/2 transform -translate-y-1/2 z-30 pointer-events-auto">
+        <div className="absolute right-16 top-1/2 transform -translate-y-1/2 z-30 pointer-events-auto flex flex-col items-center gap-3">
           <Joystick
             size={200}
             stickSize={60}
@@ -901,6 +727,29 @@ function App() {
             baseClassName="border-2 border-cyan-400/50 rounded-full backdrop-blur-sm"
             stickClassName="transition-colors"
           />
+          <div className="flex gap-2">
+            <button
+              onClick={handleFireSingle}
+              disabled={triggerActive}
+              className={`${controlButtonClass} ${triggerActive ? 'opacity-50 cursor-not-allowed' : 'hover:border-orange-400/50 hover:text-orange-300'}`}
+            >
+              <Target className="w-5 h-5" />
+              <span>Single Shot</span>
+            </button>
+            <button
+              onClick={handleFireBurst}
+              disabled={triggerActive}
+              className={`${controlButtonClass} ${triggerActive ? 'opacity-50 cursor-not-allowed' : 'hover:border-red-400/50 hover:text-red-300'}`}
+            >
+              <Zap className="w-5 h-5" />
+              <span>Burst Fire</span>
+            </button>
+          </div>
+          {triggerActive && (
+            <div className="bg-red-900/50 border border-red-500/50 px-3 py-1.5 rounded-sm text-xs uppercase font-mono tracking-wider backdrop-blur-sm animate-pulse">
+              <span className="text-red-400">⚡ FIRING</span>
+            </div>
+          )}
         </div>
       )}
     </div>

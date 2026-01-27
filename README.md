@@ -40,6 +40,15 @@ This project is a modular camera turret system consisting of a web-based UI, a c
    ```
 3. Access the UI at [http://localhost:3000](http://localhost:3000).
 
+### UI configuration (overrides via environment)
+
+The UI now reads its connection targets from environment variables (with the current IPs as safe defaults):
+
+- `NEXT_PUBLIC_WEBSOCKET_URL` (default: `ws://192.168.4.29/ws`) — ESP32 motor controller WebSocket.
+- `NEXT_PUBLIC_CAMERA_STREAM_BASE_URL` (default: `http://192.168.4.57:8081`) — Flask camera/AI gateway; stream lives at `/stream`, API at `/api`.
+
+Set these in your shell or a `.env.local` inside `ui/` when the addresses differ. The Docker Compose file now provides `NEXT_PUBLIC_CAMERA_STREAM_BASE_URL=http://localhost:8081` by default so the UI talks to the bundled `camera-stream` container on both Linux and macOS. Override either variable if your hardware lives at a different LAN address.
+
 ### Firmware
 - Firmware is managed separately using PlatformIO.
 - See `firmware/cam/` and `firmware/motors/` for details.

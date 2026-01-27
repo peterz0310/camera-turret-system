@@ -212,7 +212,7 @@ void sendStatus(bool movementComplete, bool calibrationCompleteFlag, bool yawHom
     return;
   }
 
-  StaticJsonDocument<256> doc;
+  StaticJsonDocument<512> doc;
   JsonObject status = doc.createNestedObject("status");
   status["calibrated"] = angularPositioningEnabled;
   status["calibrating"] = calibrationInProgress;
