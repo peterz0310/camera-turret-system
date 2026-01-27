@@ -95,6 +95,7 @@ volatile float joystickY = 0.0;
 volatile unsigned long lastControlMessageTime = 0;
 float filteredJoystickX = 0.0f;
 float filteredJoystickY = 0.0f;
+float verticalSmoothedSpeed = 0.0f;
 
 // Joystick chase targets (smoothed motion)
 float horizontalJogTarget = 0.0f;
@@ -254,6 +255,7 @@ void stopAllMotion()
   verticalStepper.setSpeed(0);
   horizontalStepper.stop();
   verticalStepper.stop();
+  verticalSmoothedSpeed = 0.0f;
 }
 
 void syncJogTargetsToCurrent()
@@ -269,6 +271,7 @@ void resetJoystickFilter()
 {
   filteredJoystickX = 0.0f;
   filteredJoystickY = 0.0f;
+  verticalSmoothedSpeed = 0.0f;
 }
 
 // Non-blocking trigger control functions
@@ -952,6 +955,7 @@ void motorTask(void *parameter)
     currentY = filteredJoystickY;
     float currentHorizontalSpeed = 0.0f;
     float currentVerticalSpeed = 0.0f;
+    bool verticalBlocked = false;
 
     // Handle horizontal movement (X-axis)
     if (fabs(currentX) > deadzone)
@@ -985,7 +989,7 @@ void motorTask(void *parameter)
       {
         // Hit a limit switch or trying to move into a limit
         currentVerticalSpeed = 0;
-        verticalJogTarget = (float)verticalStepper.currentPosition();
+        verticalBlocked = true;
       }
     }
     else
@@ -993,23 +997,35 @@ void motorTask(void *parameter)
       currentVerticalSpeed = 0;
     }
 
-    // Integrate joystick velocity into moving target position
+    // Integrate joystick velocity into moving target position (yaw only)
     horizontalJogTarget += currentHorizontalSpeed * dt;
-    verticalJogTarget += currentVerticalSpeed * dt;
 
     long hTargetSteps = lroundf(horizontalJogTarget);
-    long vTargetSteps = lroundf(verticalJogTarget);
-    if (isVerticalCalibrated)
-    {
-      vTargetSteps = constrain(vTargetSteps, downLimitPosition, upLimitPosition);
-      verticalJogTarget = (float)vTargetSteps;
-    }
 
     // Apply targets and run with acceleration smoothing
     horizontalStepper.moveTo(hTargetSteps);
-    verticalStepper.moveTo(vTargetSteps);
     horizontalStepper.run();
-    verticalStepper.run();
+
+    // Tilt uses speed mode with slew-limited speed for smoother low-speed motion
+    float targetVerticalSpeed = currentVerticalSpeed;
+    if (verticalBlocked)
+    {
+      verticalSmoothedSpeed = 0.0f;
+      targetVerticalSpeed = 0.0f;
+    }
+    float maxDelta = joystickAccelStepsPerSec2 * dt;
+    float delta = targetVerticalSpeed - verticalSmoothedSpeed;
+    if (delta > maxDelta)
+    {
+      delta = maxDelta;
+    }
+    else if (delta < -maxDelta)
+    {
+      delta = -maxDelta;
+    }
+    verticalSmoothedSpeed += delta;
+    verticalStepper.setSpeed(verticalSmoothedSpeed);
+    verticalStepper.runSpeed();
 
     // Log the status every 500ms to avoid flooding the serial monitor
     unsigned long currentMillis = millis();
