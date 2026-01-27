@@ -22,6 +22,8 @@ const int V_STEP_PIN = 14;
 const int V_DIR_PIN = 12;
 const int UP_LIMIT_PIN = 5;
 const int DOWN_LIMIT_PIN = 4;
+const bool VERTICAL_DIR_INVERT = false;    // Set true if tilt moves opposite of expected
+const bool LIMIT_SWITCH_ACTIVE_LOW = true; // Set false if your limit switches are active HIGH
 
 const int microstepFactor = 2;
 const int baseMaxStepsPerSec = 500;
@@ -29,10 +31,13 @@ const int maxStepsPerSec = baseMaxStepsPerSec * microstepFactor;
 const float joystickSpeedLimit = 0.6;     // Clamp joystick speed to 60% of max
 const float calibrationSpeedFactor = 0.3; // Fraction of max speed during calibration
 const float effectiveMaxStepsPerSec = maxStepsPerSec * joystickSpeedLimit;
+const float joystickAccelStepsPerSec2 = 2500.0f;
+const float joystickFilterTimeConstantSec = 0.12f;
 const float deadzone = 0.1;
 const float speedExponent = 1.0; // Control speed curve: 1.0 = linear, 2.0 = exponential
 const unsigned long CALIBRATION_TIMEOUT_MS = 15000;
-const unsigned long CONTROL_TIMEOUT_MS = 750; // Fail-safe: stop motors if joystick commands go silent
+const unsigned long CONTROL_TIMEOUT_MS = 750;       // Soft timeout: no new joystick packets
+const unsigned long CONTROL_HARD_TIMEOUT_MS = 3000; // Hard timeout: stop even if WS stays connected
 
 // Angular motion settings
 const float HORIZONTAL_GEAR_RATIO = 4.0;  // 4:1 gear ratio for yaw
@@ -88,6 +93,13 @@ volatile bool homeSensorTriggered = false;
 volatile float joystickX = 0.0;
 volatile float joystickY = 0.0;
 volatile unsigned long lastControlMessageTime = 0;
+float filteredJoystickX = 0.0f;
+float filteredJoystickY = 0.0f;
+
+// Joystick chase targets (smoothed motion)
+float horizontalJogTarget = 0.0f;
+float verticalJogTarget = 0.0f;
+unsigned long lastJogUpdateTime = 0;
 
 // Calibration control flag
 volatile bool calibrationInProgress = false;
@@ -103,6 +115,8 @@ const unsigned long STATUS_INTERVAL_MS = 1000;
 void cancelAngularMovement();
 void homeTurret();
 void stopAllMotion();
+void syncJogTargetsToCurrent();
+void resetJoystickFilter();
 void sendStatus(bool movementComplete = false, bool calibrationCompleteFlag = false, bool yawHomed = false, bool tiltCalibrated = false);
 void getCurrentAngles(float &horizontalAngle, float &verticalAngle);
 
@@ -119,22 +133,36 @@ void IRAM_ATTR homeSensorISR()
 
 void IRAM_ATTR upLimitISR()
 {
-  upLimitHit = digitalRead(UP_LIMIT_PIN) == LOW;
+  upLimitHit = LIMIT_SWITCH_ACTIVE_LOW ? (digitalRead(UP_LIMIT_PIN) == LOW) : (digitalRead(UP_LIMIT_PIN) == HIGH);
 }
 
 void IRAM_ATTR downLimitISR()
 {
-  downLimitHit = digitalRead(DOWN_LIMIT_PIN) == LOW;
+  downLimitHit = LIMIT_SWITCH_ACTIVE_LOW ? (digitalRead(DOWN_LIMIT_PIN) == LOW) : (digitalRead(DOWN_LIMIT_PIN) == HIGH);
 }
 
 bool canMoveUp()
 {
+  upLimitHit = LIMIT_SWITCH_ACTIVE_LOW ? (digitalRead(UP_LIMIT_PIN) == LOW) : (digitalRead(UP_LIMIT_PIN) == HIGH);
   return !upLimitHit;
 }
 
 bool canMoveDown()
 {
+  downLimitHit = LIMIT_SWITCH_ACTIVE_LOW ? (digitalRead(DOWN_LIMIT_PIN) == LOW) : (digitalRead(DOWN_LIMIT_PIN) == HIGH);
   return !downLimitHit;
+}
+
+bool isUpLimitActive()
+{
+  upLimitHit = LIMIT_SWITCH_ACTIVE_LOW ? (digitalRead(UP_LIMIT_PIN) == LOW) : (digitalRead(UP_LIMIT_PIN) == HIGH);
+  return upLimitHit;
+}
+
+bool isDownLimitActive()
+{
+  downLimitHit = LIMIT_SWITCH_ACTIVE_LOW ? (digitalRead(DOWN_LIMIT_PIN) == LOW) : (digitalRead(DOWN_LIMIT_PIN) == HIGH);
+  return downLimitHit;
 }
 
 bool isHomeSensorActive()
@@ -189,15 +217,19 @@ void sendStatus(bool movementComplete, bool calibrationCompleteFlag, bool yawHom
   status["calibrating"] = calibrationInProgress;
   float hAngle = 0.0f, vAngle = 0.0f;
   getCurrentAngles(hAngle, vAngle);
-  status["angles"]["horizontal"] = hAngle;
-  status["angles"]["vertical"] = vAngle;
-  status["positions"]["horizontal"] = horizontalStepper.currentPosition();
-  status["positions"]["vertical"] = verticalStepper.currentPosition();
-  status["movement"]["angularInProgress"] = angularMovementInProgress;
-  status["movement"]["isMoving"] = fabs(horizontalStepper.speed()) > 0.5f || fabs(verticalStepper.speed()) > 0.5f;
-  status["sensors"]["yawHome"] = isHomeSensorActive();
-  status["sensors"]["tiltUp"] = upLimitHit;
-  status["sensors"]["tiltDown"] = downLimitHit;
+  JsonObject angles = status.createNestedObject("angles");
+  angles["horizontal"] = hAngle;
+  angles["vertical"] = vAngle;
+  JsonObject positions = status.createNestedObject("positions");
+  positions["horizontal"] = horizontalStepper.currentPosition();
+  positions["vertical"] = verticalStepper.currentPosition();
+  JsonObject movement = status.createNestedObject("movement");
+  movement["angularInProgress"] = angularMovementInProgress;
+  movement["isMoving"] = fabs(horizontalStepper.speed()) > 0.5f || fabs(verticalStepper.speed()) > 0.5f;
+  JsonObject sensors = status.createNestedObject("sensors");
+  sensors["yawHome"] = isHomeSensorActive();
+  sensors["tiltUp"] = upLimitHit;
+  sensors["tiltDown"] = downLimitHit;
   status["triggerActive"] = triggerActive;
 
   if (movementComplete)
@@ -220,6 +252,23 @@ void stopAllMotion()
 {
   horizontalStepper.setSpeed(0);
   verticalStepper.setSpeed(0);
+  horizontalStepper.stop();
+  verticalStepper.stop();
+}
+
+void syncJogTargetsToCurrent()
+{
+  long hPos = horizontalStepper.currentPosition();
+  long vPos = verticalStepper.currentPosition();
+  horizontalJogTarget = (float)hPos;
+  verticalJogTarget = (float)vPos;
+  lastJogUpdateTime = millis();
+}
+
+void resetJoystickFilter()
+{
+  filteredJoystickX = 0.0f;
+  filteredJoystickY = 0.0f;
 }
 
 // Non-blocking trigger control functions
@@ -333,33 +382,35 @@ bool calibrateHorizontalMotor()
   if (homeSensorTriggered)
   {
     Serial.println("Home sensor active on start - backing off slowly");
-    horizontalStepper.setSpeed(-maxStepsPerSec * 0.15);
+    horizontalStepper.setMaxSpeed(maxStepsPerSec * 0.15);
+    long backoffStart = horizontalStepper.currentPosition();
+    horizontalStepper.moveTo(backoffStart - (long)(HORIZONTAL_STEPS_PER_DEGREE * 10));
     while (isHomeSensorActive())
     {
-      horizontalStepper.runSpeed();
+      horizontalStepper.run();
       if (millis() - startTime > CALIBRATION_TIMEOUT_MS)
       {
         Serial.println("Timeout while backing off home sensor");
-        horizontalStepper.setSpeed(0);
+        horizontalStepper.stop();
         return false;
       }
       delay(1);
     }
-    horizontalStepper.setSpeed(0);
+    horizontalStepper.stop();
     homeSensorTriggered = false;
     delay(150);
   }
 
   const long searchStartPosition = horizontalStepper.currentPosition();
   const long maxSearchSteps = (long)(HORIZONTAL_FULL_ROTATION_STEPS * 1.5); // Up to 1.5 revolutions
-  const float searchSpeed = maxStepsPerSec * calibrationSpeedFactor;
   bool homeFound = false;
 
   Serial.println("Sweeping yaw to find home sensor...");
-  horizontalStepper.setSpeed(searchSpeed);
+  horizontalStepper.setMaxSpeed(maxStepsPerSec * calibrationSpeedFactor);
+  horizontalStepper.moveTo(searchStartPosition + maxSearchSteps);
   while (labs(horizontalStepper.currentPosition() - searchStartPosition) < maxSearchSteps)
   {
-    horizontalStepper.runSpeed();
+    horizontalStepper.run();
     if (homeSensorTriggered || isHomeSensorActive())
     {
       homeFound = true;
@@ -372,7 +423,8 @@ bool calibrateHorizontalMotor()
     }
     delay(1);
   }
-  horizontalStepper.setSpeed(0);
+  horizontalStepper.stop();
+  horizontalStepper.setMaxSpeed(effectiveMaxStepsPerSec);
 
   if (!homeFound)
   {
@@ -403,103 +455,124 @@ bool calibrateVerticalMotor()
   unsigned long startTime = millis();
 
   // If we're already at a limit (likely leaning), move gently off that switch first
-  if (downLimitHit)
+  if (isDownLimitActive())
   {
     Serial.println("Down limit active at start, nudging up to clear...");
-    verticalStepper.setSpeed(maxStepsPerSec * 0.2);
-    while (downLimitHit)
+    verticalStepper.setMaxSpeed(maxStepsPerSec * 0.2);
+    long clearStart = verticalStepper.currentPosition();
+    verticalStepper.moveTo(clearStart + maxVerticalSearchSteps);
+    while (isDownLimitActive() && labs(verticalStepper.currentPosition() - clearStart) < maxVerticalSearchSteps)
     {
-      verticalStepper.runSpeed();
+      verticalStepper.run();
       if (millis() - startTime > CALIBRATION_TIMEOUT_MS)
       {
         Serial.println("Timeout while clearing down limit");
-        verticalStepper.setSpeed(0);
+        verticalStepper.stop();
         return false;
       }
       delay(1);
     }
-    verticalStepper.setSpeed(0);
+    verticalStepper.stop();
     delay(100);
   }
 
-  if (upLimitHit)
+  if (isUpLimitActive())
   {
     Serial.println("Up limit active at start, nudging down to clear...");
-    verticalStepper.setSpeed(-maxStepsPerSec * 0.2);
-    while (upLimitHit)
+    verticalStepper.setMaxSpeed(maxStepsPerSec * 0.2);
+    long clearStart = verticalStepper.currentPosition();
+    verticalStepper.moveTo(clearStart - maxVerticalSearchSteps);
+    while (isUpLimitActive() && labs(verticalStepper.currentPosition() - clearStart) < maxVerticalSearchSteps)
     {
-      verticalStepper.runSpeed();
+      verticalStepper.run();
       if (millis() - startTime > CALIBRATION_TIMEOUT_MS)
       {
         Serial.println("Timeout while clearing up limit");
-        verticalStepper.setSpeed(0);
+        verticalStepper.stop();
         return false;
       }
       delay(1);
     }
-    verticalStepper.setSpeed(0);
+    verticalStepper.stop();
     delay(100);
   }
 
-  // Move down until limit switch is hit
+  // Move down until limit switch is hit (latched to avoid bounce)
   Serial.println("Moving to down limit...");
-  verticalStepper.setSpeed(-maxStepsPerSec * calibrationSpeedFactor);
+  verticalStepper.setMaxSpeed(maxStepsPerSec * calibrationSpeedFactor);
   long downSearchStart = verticalStepper.currentPosition();
-  while (canMoveDown() && labs(verticalStepper.currentPosition() - downSearchStart) < maxVerticalSearchSteps)
+  verticalStepper.moveTo(downSearchStart - maxVerticalSearchSteps);
+  bool downLatched = false;
+  while (!downLatched && labs(verticalStepper.currentPosition() - downSearchStart) < maxVerticalSearchSteps)
   {
-    verticalStepper.runSpeed();
+    if (isDownLimitActive())
+    {
+      downLatched = true;
+      break;
+    }
+    verticalStepper.run();
     if (millis() - startTime > CALIBRATION_TIMEOUT_MS)
     {
       Serial.println("Timeout while searching for down limit");
-      verticalStepper.setSpeed(0);
+      verticalStepper.stop();
       break;
     }
     delay(1);
   }
   downLimitPosition = verticalStepper.currentPosition();
-  verticalStepper.setSpeed(0);
-  downFound = !canMoveDown();
+  verticalStepper.stop();
+  downFound = downLatched;
   Serial.printf("Down limit found at position: %ld\n", downLimitPosition);
 
   // Move away from down limit a bit
-  verticalStepper.move(100);
+  const long downBackoffSteps = 150;
+  verticalStepper.move(downBackoffSteps);
   while (verticalStepper.distanceToGo() != 0)
   {
     verticalStepper.run();
   }
 
   // If we're already at up limit, move away first
-  if (upLimitHit)
+  if (isUpLimitActive())
   {
     Serial.println("Already at up limit, moving away...");
-    verticalStepper.setSpeed(-maxStepsPerSec * 0.2);
-    while (upLimitHit)
+    verticalStepper.setMaxSpeed(maxStepsPerSec * 0.2);
+    long clearStart = verticalStepper.currentPosition();
+    verticalStepper.moveTo(clearStart - maxVerticalSearchSteps);
+    while (isUpLimitActive() && labs(verticalStepper.currentPosition() - clearStart) < maxVerticalSearchSteps)
     {
-      verticalStepper.runSpeed();
+      verticalStepper.run();
       delay(1);
     }
-    verticalStepper.setSpeed(0);
+    verticalStepper.stop();
     delay(100);
   }
 
-  // Move up until limit switch is hit
+  // Move up until limit switch is hit (latched to avoid bounce)
   Serial.println("Moving to up limit...");
-  verticalStepper.setSpeed(maxStepsPerSec * calibrationSpeedFactor);
+  verticalStepper.setMaxSpeed(maxStepsPerSec * calibrationSpeedFactor);
   long upSearchStart = verticalStepper.currentPosition();
-  while (canMoveUp() && labs(verticalStepper.currentPosition() - upSearchStart) < maxVerticalSearchSteps)
+  verticalStepper.moveTo(upSearchStart + maxVerticalSearchSteps);
+  bool upLatched = false;
+  while (!upLatched && labs(verticalStepper.currentPosition() - upSearchStart) < maxVerticalSearchSteps)
   {
-    verticalStepper.runSpeed();
+    if (isUpLimitActive())
+    {
+      upLatched = true;
+      break;
+    }
+    verticalStepper.run();
     if (millis() - startTime > CALIBRATION_TIMEOUT_MS)
     {
       Serial.println("Timeout while searching for up limit");
-      verticalStepper.setSpeed(0);
+      verticalStepper.stop();
       break;
     }
     delay(1);
   }
   upLimitPosition = verticalStepper.currentPosition();
-  verticalStepper.setSpeed(0);
-  upFound = !canMoveUp();
+  verticalStepper.stop();
+  upFound = upLatched;
   Serial.printf("Up limit found at position: %ld\n", upLimitPosition);
 
   if (downFound && upFound)
@@ -514,6 +587,7 @@ bool calibrateVerticalMotor()
     }
 
     isVerticalCalibrated = true;
+    verticalStepper.setMaxSpeed(effectiveMaxStepsPerSec);
     Serial.println("Vertical calibration complete!");
     Serial.printf("Vertical working range: %ld to %ld steps (%ld total)\n",
                   downLimitPosition, upLimitPosition,
@@ -523,6 +597,7 @@ bool calibrateVerticalMotor()
 
   isVerticalCalibrated = false;
   Serial.println("WARNING: Vertical calibration incomplete - limit switches not detected as expected");
+  verticalStepper.setMaxSpeed(effectiveMaxStepsPerSec);
   return false;
 }
 
@@ -551,6 +626,7 @@ void calibrateMotors()
   angularPositioningEnabled = horizontalOk && verticalOk;
 
   calibrationInProgress = false; // Resume motor task
+  syncJogTargetsToCurrent();
   if (angularPositioningEnabled)
   {
     Serial.println("All motors calibrated! Motor task resumed.");
@@ -593,6 +669,7 @@ void homeTurret()
 
   angularPositioningEnabled = yawOk && isVerticalCalibrated;
   calibrationInProgress = false;
+  syncJogTargetsToCurrent();
 
   StaticJsonDocument<96> response;
   response["homeComplete"] = true;
@@ -755,6 +832,11 @@ void motorTask(void *parameter)
 
   for (;;)
   {
+    if (lastJogUpdateTime == 0)
+    {
+      syncJogTargetsToCurrent();
+    }
+
     // Pause motor task during calibration
     if (calibrationInProgress)
     {
@@ -771,14 +853,19 @@ void motorTask(void *parameter)
     // Fail-safe: stop motors if control input goes quiet while in joystick mode
     static bool controlTimeoutActive = false;
     unsigned long now = millis();
-    if (!angularMovementInProgress && (now - lastControlMessageTime) > CONTROL_TIMEOUT_MS)
+    bool noClients = (ws.count() == 0);
+    unsigned long inputAge = now - lastControlMessageTime;
+    bool hardStale = inputAge > CONTROL_HARD_TIMEOUT_MS;
+
+    if (!angularMovementInProgress && (noClients || hardStale))
     {
       if (!controlTimeoutActive &&
-          (fabs(joystickX) > deadzone || fabs(joystickY) > deadzone ||
-           fabs(horizontalStepper.speed()) > 0.5f || fabs(verticalStepper.speed()) > 0.5f))
+          (fabs(horizontalStepper.speed()) > 0.5f || fabs(verticalStepper.speed()) > 0.5f))
       {
         joystickX = 0.0f;
         joystickY = 0.0f;
+        resetJoystickFilter();
+        syncJogTargetsToCurrent();
         stopAllMotion();
         Serial.println("Control timeout - stopping motors");
         sendStatus(false, false, false, false);
@@ -799,6 +886,7 @@ void motorTask(void *parameter)
       {
         Serial.println("Angular movement timeout - resuming joystick control");
         angularMovementInProgress = false;
+        syncJogTargetsToCurrent();
         sendStatus(true, false, false, false);
       }
       else
@@ -811,6 +899,7 @@ void motorTask(void *parameter)
         {
           Serial.println("Angular movement complete - resuming joystick control");
           angularMovementInProgress = false;
+          syncJogTargetsToCurrent();
           sendStatus(true, false, false, false);
         }
         else
@@ -838,8 +927,31 @@ void motorTask(void *parameter)
     // Normal joystick control mode (only when not in angular movement)
     float currentX = joystickX;
     float currentY = joystickY;
-    float currentHorizontalSpeed = 0.0;
-    float currentVerticalSpeed = 0.0;
+    unsigned long nowMs = millis();
+    unsigned long dtMs = nowMs - lastJogUpdateTime;
+    if (dtMs > 100)
+    {
+      dtMs = 100; // Clamp to avoid large jumps after stalls
+    }
+    float dt = dtMs / 1000.0f;
+    lastJogUpdateTime = nowMs;
+
+    if (dt > 0.0f)
+    {
+      float alpha = dt / (joystickFilterTimeConstantSec + dt);
+      filteredJoystickX += alpha * (currentX - filteredJoystickX);
+      filteredJoystickY += alpha * (currentY - filteredJoystickY);
+    }
+    else
+    {
+      filteredJoystickX = currentX;
+      filteredJoystickY = currentY;
+    }
+
+    currentX = filteredJoystickX;
+    currentY = filteredJoystickY;
+    float currentHorizontalSpeed = 0.0f;
+    float currentVerticalSpeed = 0.0f;
 
     // Handle horizontal movement (X-axis)
     if (fabs(currentX) > deadzone)
@@ -848,11 +960,9 @@ void motorTask(void *parameter)
       float mappedSpeed = pow(normX, speedExponent) * effectiveMaxStepsPerSec;
 
       currentHorizontalSpeed = (currentX > 0) ? mappedSpeed : -mappedSpeed;
-      horizontalStepper.setSpeed(currentHorizontalSpeed);
     }
     else
     {
-      horizontalStepper.setSpeed(0);
       currentHorizontalSpeed = 0;
     }
 
@@ -866,29 +976,40 @@ void motorTask(void *parameter)
       if (currentY > 0 && canMoveUp())
       { // Moving up
         currentVerticalSpeed = mappedSpeed;
-        verticalStepper.setSpeed(currentVerticalSpeed);
       }
       else if (currentY < 0 && canMoveDown())
       { // Moving down
         currentVerticalSpeed = -mappedSpeed;
-        verticalStepper.setSpeed(currentVerticalSpeed);
       }
       else
       {
         // Hit a limit switch or trying to move into a limit
-        verticalStepper.setSpeed(0);
         currentVerticalSpeed = 0;
+        verticalJogTarget = (float)verticalStepper.currentPosition();
       }
     }
     else
     {
-      verticalStepper.setSpeed(0);
       currentVerticalSpeed = 0;
     }
 
-    // Run both steppers using runSpeed() for joystick control
-    horizontalStepper.runSpeed();
-    verticalStepper.runSpeed();
+    // Integrate joystick velocity into moving target position
+    horizontalJogTarget += currentHorizontalSpeed * dt;
+    verticalJogTarget += currentVerticalSpeed * dt;
+
+    long hTargetSteps = lroundf(horizontalJogTarget);
+    long vTargetSteps = lroundf(verticalJogTarget);
+    if (isVerticalCalibrated)
+    {
+      vTargetSteps = constrain(vTargetSteps, downLimitPosition, upLimitPosition);
+      verticalJogTarget = (float)vTargetSteps;
+    }
+
+    // Apply targets and run with acceleration smoothing
+    horizontalStepper.moveTo(hTargetSteps);
+    verticalStepper.moveTo(vTargetSteps);
+    horizontalStepper.run();
+    verticalStepper.run();
 
     // Log the status every 500ms to avoid flooding the serial monitor
     unsigned long currentMillis = millis();
@@ -933,13 +1054,17 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
     lastControlMessageTime = millis();
     joystickX = 0.0f;
     joystickY = 0.0f;
+    resetJoystickFilter();
+    syncJogTargetsToCurrent();
     stopAllMotion();
     break;
   case WS_EVT_DISCONNECT:
     Serial.printf("WebSocket client disconnected: %u\n", client->id());
     joystickX = 0.0f;
     joystickY = 0.0f;
+    resetJoystickFilter();
     angularMovementInProgress = false;
+    syncJogTargetsToCurrent();
     stopAllMotion();
     horizontalStepper.stop();
     verticalStepper.stop();
@@ -961,7 +1086,6 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
     {
       joystickX = doc["x"].as<float>();
       lastControlMessageTime = millis();
-      Serial.printf("WebSocket X received: %.3f\n", joystickX);
 
       // Cancel angular movement if significant joystick input is detected
       if (angularMovementInProgress && fabs(joystickX) > deadzone)
@@ -974,7 +1098,6 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
     {
       joystickY = doc["y"].as<float>();
       lastControlMessageTime = millis();
-      Serial.printf("WebSocket Y received: %.3f\n", joystickY);
 
       // Cancel angular movement if significant joystick input is detected
       if (angularMovementInProgress && fabs(joystickY) > deadzone)
@@ -1080,14 +1203,14 @@ void setup()
   pinMode(DOWN_LIMIT_PIN, INPUT_PULLUP);
 
   // Attach interrupts for sensors
-  attachInterrupt(digitalPinToInterrupt(H_HOME_PIN), homeSensorISR, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(H_HOME_PIN), homeSensorISR, FALLING);
   attachInterrupt(digitalPinToInterrupt(UP_LIMIT_PIN), upLimitISR, CHANGE);
   attachInterrupt(digitalPinToInterrupt(DOWN_LIMIT_PIN), downLimitISR, CHANGE);
 
   // Initialize sensor states
   homeSensorTriggered = digitalRead(H_HOME_PIN) == LOW;
-  upLimitHit = digitalRead(UP_LIMIT_PIN) == LOW;
-  downLimitHit = digitalRead(DOWN_LIMIT_PIN) == LOW;
+  upLimitHit = LIMIT_SWITCH_ACTIVE_LOW ? (digitalRead(UP_LIMIT_PIN) == LOW) : (digitalRead(UP_LIMIT_PIN) == HIGH);
+  downLimitHit = LIMIT_SWITCH_ACTIVE_LOW ? (digitalRead(DOWN_LIMIT_PIN) == LOW) : (digitalRead(DOWN_LIMIT_PIN) == HIGH);
 
   Serial.printf("Initial sensor states - Yaw home: %s, Up: %s, Down: %s\n",
                 homeSensorTriggered ? "ACTIVE" : "CLEAR",
@@ -1104,9 +1227,9 @@ void setup()
   // Initialize stepper settings
   horizontalStepper.setMaxSpeed(effectiveMaxStepsPerSec);
   verticalStepper.setMaxSpeed(effectiveMaxStepsPerSec);
-  horizontalStepper.setAcceleration(effectiveMaxStepsPerSec * 0.8);
-  verticalStepper.setAcceleration(effectiveMaxStepsPerSec * 0.8);
-  verticalStepper.setPinsInverted(false, false, false); // Tilt direction configuration
+  horizontalStepper.setAcceleration(joystickAccelStepsPerSec2);
+  verticalStepper.setAcceleration(joystickAccelStepsPerSec2);
+  verticalStepper.setPinsInverted(VERTICAL_DIR_INVERT, false, false); // Tilt direction configuration
 
   // Initialize servo motor for trigger
   triggerServo.setPeriodHertz(50);           // Standard 50Hz servo
@@ -1120,6 +1243,7 @@ void setup()
 
   Serial.println("Running startup calibration...");
   calibrateMotors();
+  syncJogTargetsToCurrent();
 
   // Connect to WiFi
   WiFi.begin(ssid, password);
@@ -1178,6 +1302,7 @@ void cancelAngularMovement()
 
     // Stop both motors
     stopAllMotion();
+    syncJogTargetsToCurrent();
   }
 
   sendStatus(false, false, false, false);
