@@ -36,9 +36,9 @@ const int baseMaxStepsPerSec = 500;
 const float verticalSpeedScale = 0.5f; // Tilt moves at half the yaw speed
 const int horizontalMaxStepsPerSec = baseMaxStepsPerSec * microstepFactor;
 const int verticalMaxStepsPerSec = (int)(horizontalMaxStepsPerSec * verticalSpeedScale);
-const float joystickSpeedLimit = 0.6;     // Clamp joystick speed to 60% of max
+const float joystickSpeedLimit = 0.6;               // Clamp joystick speed to 60% of max
 const float horizontalCalibrationSpeedFactor = 0.3; // Fraction of max speed during calibration (yaw)
-const float verticalCalibrationSpeedFactor = 0.12;  // Slower tilt calibration sweep
+const float verticalCalibrationSpeedFactor = 0.18;  // Slower tilt calibration sweep
 const float verticalClearSpeedFactor = 0.10;        // Slowest tilt speed when clearing limits
 const float effectiveHorizontalMaxStepsPerSec = horizontalMaxStepsPerSec * joystickSpeedLimit;
 const float effectiveVerticalMaxStepsPerSec = verticalMaxStepsPerSec * joystickSpeedLimit;
@@ -53,7 +53,7 @@ const unsigned long CONTROL_HARD_TIMEOUT_MS = 3000; // Hard timeout: stop even i
 
 // Angular motion settings
 const float HORIZONTAL_GEAR_RATIO = 4.0;  // 4:1 gear ratio for yaw
-const float VERTICAL_GEAR_RATIO = 3.0;    // 3:1 gear ratio for tilt
+const float VERTICAL_GEAR_RATIO = 2.25;   // 2.25:1 gear ratio for tilt
 const float STEPS_PER_REVOLUTION = 200.0; // Standard stepper motor (1.8° per step)
 const float DEGREES_PER_REVOLUTION = 360.0;
 
@@ -1177,14 +1177,14 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
   case WS_EVT_DATA:
   {
     StaticJsonDocument<200> doc;
-  DeserializationError error = deserializeJson(doc, data, len);
-  if (error)
-  {
-    Serial.print("deserializeJson() failed: ");
-    Serial.println(error.c_str());
-    recordError("Bad JSON from client");
-    return;
-  }
+    DeserializationError error = deserializeJson(doc, data, len);
+    if (error)
+    {
+      Serial.print("deserializeJson() failed: ");
+      Serial.println(error.c_str());
+      recordError("Bad JSON from client");
+      return;
+    }
     if (doc.containsKey("x"))
     {
       joystickX = doc["x"].as<float>();
@@ -1235,11 +1235,11 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
       {
         startBurstFire();
       }
-    else
-    {
-      Serial.println("Unknown fire mode: " + fireMode);
-      recordError("Unknown fire mode: " + fireMode);
-    }
+      else
+      {
+        Serial.println("Unknown fire mode: " + fireMode);
+        recordError("Unknown fire mode: " + fireMode);
+      }
     }
 
     // Check for angular movement commands
