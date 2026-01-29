@@ -1,47 +1,49 @@
 # ESP32 Camera Stream Server with AI Detection
 
-A Flask server that streams video from an ESP32 cam with automatic fallback handling and optional AI-powered person detection using YOLOv8.
+A Flask server that proxies the ESP32-CAM MJPEG stream, adds optional AI person detection, and exposes a small REST API for AI control and telemetry.
 
 ## Features
 
 - **Raw Video Stream**: Direct MJPEG stream from ESP32-CAM
-- **AI-Enhanced Stream**: Real-time person detection with bounding boxes
+- **AI-Enhanced Stream**: Server-side person detection with bounding boxes drawn into the stream
 - **Automatic Fallback**: Animated static when camera is unavailable
-- **API Control**: RESTful endpoints for AI control and detection data
+- **API Control**: REST endpoints for AI enable/disable, model selection, and FPS tuning
 
 ## Configuration
 
 Edit `.env` to configure your camera URL:
 
 ```env
-ESP32_CAM_URL=http://192.168.4.62/stream
+ESP32_CAM_URL=http://192.168.4.1/stream
 ```
 
 ## Endpoints
 
 - `/` - Simple web page to view the stream
 - `/stream` - MJPEG video stream endpoint
-  - Add `?ai=true` for AI-annotated stream
-  - Default: raw stream
-- `/api/ai` - POST endpoint to enable/disable AI processing
-- `/api/detections` - GET current detection results
-- `/ping` - Health check
+  - When AI is enabled, the stream is annotated server-side.
+  - When AI is disabled, the stream is raw.
+- `/api/ai` - POST enable/disable AI and optionally switch model
+- `/api/detections` - GET latest detection results (JSON)
+- `/api/models` - GET available models + current model + FPS info
+- `/api/fps` - GET or POST per-model detection FPS
 
 ## AI Features
 
-The AI detection system supports multiple models with MobileNet-SSD as the default:
+The AI detection system supports multiple models with MobileNet-SSD as the default.
+Detections are computed asynchronously at a configurable FPS and drawn into the outgoing stream.
 
 ### Default Model: MobileNet-SSD
-- **Detection Rate**: 15 FPS (configurable)
-- **Stream Rate**: Full camera framerate (15-30 FPS)
-- **Model**: MobileNet-SSD v2 (downloads automatically on first run)
+- **Detection Rate**: 15 FPS default (configurable per model)
+- **Stream Rate**: Full camera framerate; detections are overlaid as they arrive
+- **Model**: MobileNet-SSD v2 via TensorFlow Hub (downloads on first run)
 - **Classes**: Person detection only
 - **Confidence**: 50% threshold
 - **Description**: Fast inference, good balance of speed and accuracy
 
 ### Alternative Model: YOLOv8n
-- **Detection Rate**: 4 FPS (configurable) 
-- **Model**: YOLOv8n (nano) - High accuracy, optimized input size
+- **Detection Rate**: 4 FPS default (configurable per model)
+- **Model**: YOLOv8n (nano) via ultralytics (weights download on first run)
 - **Classes**: Person detection only
 - **Confidence**: 50% threshold
 
@@ -62,5 +64,4 @@ curl http://localhost:8081/api/detections
 ```
 
 ### Stream URLs
-- Raw stream: `http://localhost:8081/stream`
-- AI stream: `http://localhost:8081/stream?ai=true`
+- Stream (raw or annotated depending on AI state): `http://localhost:8081/stream`

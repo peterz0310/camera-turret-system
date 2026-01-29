@@ -553,17 +553,61 @@ bool calibrateVerticalMotor()
     }
     delay(1);
   }
-  downLimitPosition = verticalStepper.currentPosition();
   verticalStepper.stop();
   downFound = downLatched;
-  Serial.printf("Down limit found at position: %ld\n", downLimitPosition);
 
-  // Move away from down limit a bit
-  const long downBackoffSteps = 150;
-  verticalStepper.move(downBackoffSteps);
-  while (verticalStepper.distanceToGo() != 0)
+  if (downFound)
   {
-    verticalStepper.run();
+    const long downBackoffSteps = 180;
+    const long downReapproachSteps = 360;
+
+    Serial.println("Down limit latched - backing off and reapproaching slowly");
+    verticalStepper.setMaxSpeed(verticalMaxStepsPerSec * verticalClearSpeedFactor);
+
+    // Back off to clear the switch
+    verticalStepper.move(downBackoffSteps);
+    while (verticalStepper.distanceToGo() != 0)
+    {
+      verticalStepper.run();
+      if (millis() - startTime > CALIBRATION_TIMEOUT_MS)
+      {
+        Serial.println("Timeout while backing off down limit");
+        verticalStepper.stop();
+        break;
+      }
+      delay(1);
+    }
+
+    // Re-approach slowly for a clean latch
+    long downReapproachStart = verticalStepper.currentPosition();
+    verticalStepper.moveTo(downReapproachStart - downReapproachSteps);
+    bool downReLatched = false;
+    while (!downReLatched && labs(verticalStepper.currentPosition() - downReapproachStart) < downReapproachSteps)
+    {
+      if (isDownLimitActive())
+      {
+        downReLatched = true;
+        break;
+      }
+      verticalStepper.run();
+      if (millis() - startTime > CALIBRATION_TIMEOUT_MS)
+      {
+        Serial.println("Timeout while re-approaching down limit");
+        verticalStepper.stop();
+        break;
+      }
+      delay(1);
+    }
+
+    downLimitPosition = verticalStepper.currentPosition();
+    verticalStepper.stop();
+    downFound = downLatched && downReLatched;
+    Serial.printf("Down limit found at position: %ld\n", downLimitPosition);
+  }
+  else
+  {
+    downLimitPosition = verticalStepper.currentPosition();
+    Serial.printf("Down limit not found (last position: %ld)\n", downLimitPosition);
   }
 
   // If we're already at up limit, move away first
@@ -604,10 +648,62 @@ bool calibrateVerticalMotor()
     }
     delay(1);
   }
-  upLimitPosition = verticalStepper.currentPosition();
   verticalStepper.stop();
   upFound = upLatched;
-  Serial.printf("Up limit found at position: %ld\n", upLimitPosition);
+
+  if (upFound)
+  {
+    const long upBackoffSteps = 180;
+    const long upReapproachSteps = 360;
+
+    Serial.println("Up limit latched - backing off and reapproaching slowly");
+    verticalStepper.setMaxSpeed(verticalMaxStepsPerSec * verticalClearSpeedFactor);
+
+    // Back off to clear the switch
+    verticalStepper.move(-upBackoffSteps);
+    while (verticalStepper.distanceToGo() != 0)
+    {
+      verticalStepper.run();
+      if (millis() - startTime > CALIBRATION_TIMEOUT_MS)
+      {
+        Serial.println("Timeout while backing off up limit");
+        verticalStepper.stop();
+        break;
+      }
+      delay(1);
+    }
+
+    // Re-approach slowly for a clean latch
+    long upReapproachStart = verticalStepper.currentPosition();
+    verticalStepper.moveTo(upReapproachStart + upReapproachSteps);
+    bool upReLatched = false;
+    while (!upReLatched && labs(verticalStepper.currentPosition() - upReapproachStart) < upReapproachSteps)
+    {
+      if (isUpLimitActive())
+      {
+        upReLatched = true;
+        break;
+      }
+      verticalStepper.run();
+      if (millis() - startTime > CALIBRATION_TIMEOUT_MS)
+      {
+        Serial.println("Timeout while re-approaching up limit");
+        verticalStepper.stop();
+        break;
+      }
+      delay(1);
+    }
+
+    upLimitPosition = verticalStepper.currentPosition();
+    verticalStepper.stop();
+    upFound = upLatched && upReLatched;
+    Serial.printf("Up limit found at position: %ld\n", upLimitPosition);
+  }
+  else
+  {
+    upLimitPosition = verticalStepper.currentPosition();
+    Serial.printf("Up limit not found (last position: %ld)\n", upLimitPosition);
+  }
 
   if (downFound && upFound)
   {
