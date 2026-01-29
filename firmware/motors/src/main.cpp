@@ -33,12 +33,18 @@ const bool LIMIT_SWITCH_ACTIVE_LOW = true; // Set false if your limit switches a
 
 const int microstepFactor = 2;
 const int baseMaxStepsPerSec = 500;
-const int maxStepsPerSec = baseMaxStepsPerSec * microstepFactor;
+const float verticalSpeedScale = 0.5f; // Tilt moves at half the yaw speed
+const int horizontalMaxStepsPerSec = baseMaxStepsPerSec * microstepFactor;
+const int verticalMaxStepsPerSec = (int)(horizontalMaxStepsPerSec * verticalSpeedScale);
 const float joystickSpeedLimit = 0.6;     // Clamp joystick speed to 60% of max
-const float calibrationSpeedFactor = 0.3; // Fraction of max speed during calibration
-const float effectiveMaxStepsPerSec = maxStepsPerSec * joystickSpeedLimit;
+const float horizontalCalibrationSpeedFactor = 0.3; // Fraction of max speed during calibration (yaw)
+const float verticalCalibrationSpeedFactor = 0.12;  // Slower tilt calibration sweep
+const float verticalClearSpeedFactor = 0.10;        // Slowest tilt speed when clearing limits
+const float effectiveHorizontalMaxStepsPerSec = horizontalMaxStepsPerSec * joystickSpeedLimit;
+const float effectiveVerticalMaxStepsPerSec = verticalMaxStepsPerSec * joystickSpeedLimit;
 const float joystickAccelStepsPerSec2 = 2500.0f;
 const float joystickFilterTimeConstantSec = 0.12f;
+const float jogReleaseTimeConstantSec = 0.06f; // Pull yaw target back quickly when stick is released
 const float deadzone = 0.1;
 const float speedExponent = 1.0; // Control speed curve: 1.0 = linear, 2.0 = exponential
 const unsigned long CALIBRATION_TIMEOUT_MS = 15000;
@@ -177,6 +183,20 @@ bool isDownLimitActive()
 bool isHomeSensorActive()
 {
   return digitalRead(H_HOME_PIN) == LOW;
+}
+
+void getVerticalBounds(long &minPos, long &maxPos)
+{
+  if (downLimitPosition <= upLimitPosition)
+  {
+    minPos = downLimitPosition;
+    maxPos = upLimitPosition;
+  }
+  else
+  {
+    minPos = upLimitPosition;
+    maxPos = downLimitPosition;
+  }
 }
 
 float wrapTo360(float angle)
@@ -396,7 +416,7 @@ bool calibrateHorizontalMotor()
   if (homeSensorTriggered)
   {
     Serial.println("Home sensor active on start - backing off slowly");
-    horizontalStepper.setMaxSpeed(maxStepsPerSec * 0.15);
+    horizontalStepper.setMaxSpeed(horizontalMaxStepsPerSec * 0.15);
     long backoffStart = horizontalStepper.currentPosition();
     horizontalStepper.moveTo(backoffStart - (long)(HORIZONTAL_STEPS_PER_DEGREE * 10));
     while (isHomeSensorActive())
@@ -420,7 +440,7 @@ bool calibrateHorizontalMotor()
   bool homeFound = false;
 
   Serial.println("Sweeping yaw to find home sensor...");
-  horizontalStepper.setMaxSpeed(maxStepsPerSec * calibrationSpeedFactor);
+  horizontalStepper.setMaxSpeed(horizontalMaxStepsPerSec * horizontalCalibrationSpeedFactor);
   horizontalStepper.moveTo(searchStartPosition + maxSearchSteps);
   while (labs(horizontalStepper.currentPosition() - searchStartPosition) < maxSearchSteps)
   {
@@ -438,7 +458,7 @@ bool calibrateHorizontalMotor()
     delay(1);
   }
   horizontalStepper.stop();
-  horizontalStepper.setMaxSpeed(effectiveMaxStepsPerSec);
+  horizontalStepper.setMaxSpeed(effectiveHorizontalMaxStepsPerSec);
 
   if (!homeFound)
   {
@@ -472,7 +492,7 @@ bool calibrateVerticalMotor()
   if (isDownLimitActive())
   {
     Serial.println("Down limit active at start, nudging up to clear...");
-    verticalStepper.setMaxSpeed(maxStepsPerSec * 0.2);
+    verticalStepper.setMaxSpeed(verticalMaxStepsPerSec * verticalClearSpeedFactor);
     long clearStart = verticalStepper.currentPosition();
     verticalStepper.moveTo(clearStart + maxVerticalSearchSteps);
     while (isDownLimitActive() && labs(verticalStepper.currentPosition() - clearStart) < maxVerticalSearchSteps)
@@ -493,7 +513,7 @@ bool calibrateVerticalMotor()
   if (isUpLimitActive())
   {
     Serial.println("Up limit active at start, nudging down to clear...");
-    verticalStepper.setMaxSpeed(maxStepsPerSec * 0.2);
+    verticalStepper.setMaxSpeed(verticalMaxStepsPerSec * verticalClearSpeedFactor);
     long clearStart = verticalStepper.currentPosition();
     verticalStepper.moveTo(clearStart - maxVerticalSearchSteps);
     while (isUpLimitActive() && labs(verticalStepper.currentPosition() - clearStart) < maxVerticalSearchSteps)
@@ -513,7 +533,7 @@ bool calibrateVerticalMotor()
 
   // Move down until limit switch is hit (latched to avoid bounce)
   Serial.println("Moving to down limit...");
-  verticalStepper.setMaxSpeed(maxStepsPerSec * calibrationSpeedFactor);
+  verticalStepper.setMaxSpeed(verticalMaxStepsPerSec * verticalCalibrationSpeedFactor);
   long downSearchStart = verticalStepper.currentPosition();
   verticalStepper.moveTo(downSearchStart - maxVerticalSearchSteps);
   bool downLatched = false;
@@ -550,7 +570,7 @@ bool calibrateVerticalMotor()
   if (isUpLimitActive())
   {
     Serial.println("Already at up limit, moving away...");
-    verticalStepper.setMaxSpeed(maxStepsPerSec * 0.2);
+    verticalStepper.setMaxSpeed(verticalMaxStepsPerSec * verticalClearSpeedFactor);
     long clearStart = verticalStepper.currentPosition();
     verticalStepper.moveTo(clearStart - maxVerticalSearchSteps);
     while (isUpLimitActive() && labs(verticalStepper.currentPosition() - clearStart) < maxVerticalSearchSteps)
@@ -564,7 +584,7 @@ bool calibrateVerticalMotor()
 
   // Move up until limit switch is hit (latched to avoid bounce)
   Serial.println("Moving to up limit...");
-  verticalStepper.setMaxSpeed(maxStepsPerSec * calibrationSpeedFactor);
+  verticalStepper.setMaxSpeed(verticalMaxStepsPerSec * verticalCalibrationSpeedFactor);
   long upSearchStart = verticalStepper.currentPosition();
   verticalStepper.moveTo(upSearchStart + maxVerticalSearchSteps);
   bool upLatched = false;
@@ -601,17 +621,20 @@ bool calibrateVerticalMotor()
     }
 
     isVerticalCalibrated = true;
-    verticalStepper.setMaxSpeed(effectiveMaxStepsPerSec);
+    verticalStepper.setMaxSpeed(effectiveVerticalMaxStepsPerSec);
     Serial.println("Vertical calibration complete!");
+    long vMin = 0;
+    long vMax = 0;
+    getVerticalBounds(vMin, vMax);
     Serial.printf("Vertical working range: %ld to %ld steps (%ld total)\n",
-                  downLimitPosition, upLimitPosition,
-                  upLimitPosition - downLimitPosition);
+                  vMin, vMax,
+                  vMax - vMin);
     return true;
   }
 
   isVerticalCalibrated = false;
   Serial.println("WARNING: Vertical calibration incomplete - limit switches not detected as expected");
-  verticalStepper.setMaxSpeed(effectiveMaxStepsPerSec);
+  verticalStepper.setMaxSpeed(effectiveVerticalMaxStepsPerSec);
   return false;
 }
 
@@ -749,11 +772,14 @@ bool moveToAbsoluteAngle(float horizontalDegrees, float verticalDegrees)
 
   long targetVerticalPosition = verticalCenterPosition + degreesToSteps(verticalDegrees, false);
 
-  // Check if targets are within limits
-  if (targetVerticalPosition < downLimitPosition || targetVerticalPosition > upLimitPosition)
+  // Check if targets are within limits (tilt only)
+  long vMin = 0;
+  long vMax = 0;
+  getVerticalBounds(vMin, vMax);
+  if (targetVerticalPosition < vMin || targetVerticalPosition > vMax)
   {
     Serial.printf("Vertical target %.2f° (pos %ld) exceeds limits [%ld, %ld]\n",
-                  verticalDegrees, targetVerticalPosition, downLimitPosition, upLimitPosition);
+                  verticalDegrees, targetVerticalPosition, vMin, vMax);
     recordError("Move rejected: vertical target out of limits");
     return false;
   }
@@ -796,7 +822,10 @@ bool moveByRelativeAngle(float horizontalDegrees, float verticalDegrees)
   long targetVerticalPosition = verticalStepper.currentPosition() + verticalSteps;
 
   // Check if targets are within limits (tilt only)
-  if (targetVerticalPosition < downLimitPosition || targetVerticalPosition > upLimitPosition)
+  long vMin = 0;
+  long vMax = 0;
+  getVerticalBounds(vMin, vMax);
+  if (targetVerticalPosition < vMin || targetVerticalPosition > vMax)
   {
     Serial.printf("Relative vertical move %.2f° would exceed limits\n", verticalDegrees);
     recordError("Relative move rejected: vertical target out of limits");
@@ -1009,7 +1038,7 @@ void motorTask(void *parameter)
     if (fabs(currentX) > deadzone)
     {
       float normX = (fabs(currentX) - deadzone) / (1.0 - deadzone);
-      float mappedSpeed = pow(normX, speedExponent) * effectiveMaxStepsPerSec;
+      float mappedSpeed = pow(normX, speedExponent) * effectiveHorizontalMaxStepsPerSec;
 
       currentHorizontalSpeed = (currentX > 0) ? mappedSpeed : -mappedSpeed;
     }
@@ -1022,7 +1051,7 @@ void motorTask(void *parameter)
     if (fabs(currentY) > deadzone)
     {
       float normY = (fabs(currentY) - deadzone) / (1.0 - deadzone);
-      float mappedSpeed = pow(normY, speedExponent) * effectiveMaxStepsPerSec;
+      float mappedSpeed = pow(normY, speedExponent) * effectiveVerticalMaxStepsPerSec;
 
       // Check limit switches before setting speed
       if (currentY > 0 && canMoveUp())
@@ -1046,7 +1075,16 @@ void motorTask(void *parameter)
     }
 
     // Integrate joystick velocity into moving target position (yaw only)
-    horizontalJogTarget += currentHorizontalSpeed * dt;
+    if (fabs(currentX) > deadzone)
+    {
+      horizontalJogTarget += currentHorizontalSpeed * dt;
+    }
+    else
+    {
+      // When the stick is released, pull the target back to current position quickly
+      float releaseAlpha = dt / (jogReleaseTimeConstantSec + dt);
+      horizontalJogTarget += (horizontalStepper.currentPosition() - horizontalJogTarget) * releaseAlpha;
+    }
 
     long hTargetSteps = lroundf(horizontalJogTarget);
 
@@ -1080,8 +1118,8 @@ void motorTask(void *parameter)
     if (currentMillis - lastLogTime >= 500)
     {
       lastLogTime = currentMillis;
-      float horizontalPercentSpeed = (fabs(currentHorizontalSpeed) / effectiveMaxStepsPerSec) * 100.0;
-      float verticalPercentSpeed = (fabs(currentVerticalSpeed) / effectiveMaxStepsPerSec) * 100.0;
+      float horizontalPercentSpeed = (fabs(currentHorizontalSpeed) / effectiveHorizontalMaxStepsPerSec) * 100.0;
+      float verticalPercentSpeed = (fabs(currentVerticalSpeed) / effectiveVerticalMaxStepsPerSec) * 100.0;
       Serial.printf("Joy: X=%.3f Y=%.3f | H: %.1f%% V: %.1f%% | Home:%s | TiltLimits: U=%s D=%s | H_Pos: %ld V_Pos: %ld | Trigger: %s | Cal: H=%s V=%s | Mode: %s\n",
                     currentX, currentY,
                     horizontalPercentSpeed, verticalPercentSpeed,
@@ -1291,8 +1329,8 @@ void setup()
   }
 
   // Initialize stepper settings
-  horizontalStepper.setMaxSpeed(effectiveMaxStepsPerSec);
-  verticalStepper.setMaxSpeed(effectiveMaxStepsPerSec);
+  horizontalStepper.setMaxSpeed(effectiveHorizontalMaxStepsPerSec);
+  verticalStepper.setMaxSpeed(effectiveVerticalMaxStepsPerSec);
   horizontalStepper.setAcceleration(joystickAccelStepsPerSec2);
   verticalStepper.setAcceleration(joystickAccelStepsPerSec2);
   verticalStepper.setPinsInverted(VERTICAL_DIR_INVERT, false, false); // Tilt direction configuration
