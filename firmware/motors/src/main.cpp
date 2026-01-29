@@ -6,6 +6,12 @@
 #include <ESP32Servo.h>
 #include <math.h>
 
+// Simple ring buffer for recent error messages sent to UI
+const size_t MAX_ERROR_LOG = 6;
+String errorLog[MAX_ERROR_LOG];
+size_t errorLogCount = 0;
+size_t errorLogHead = 0;
+
 // WiFi and WebSocket settings
 const char *ssid = "Apt 210";
 const char *password = "mistycanoe3";
@@ -120,6 +126,8 @@ void syncJogTargetsToCurrent();
 void resetJoystickFilter();
 void sendStatus(bool movementComplete = false, bool calibrationCompleteFlag = false, bool yawHomed = false, bool tiltCalibrated = false);
 void getCurrentAngles(float &horizontalAngle, float &verticalAngle);
+void recordError(const String &msg);
+void appendErrors(JsonArray &arr);
 
 // Create AccelStepper instances
 AccelStepper horizontalStepper(AccelStepper::DRIVER, H_STEP_PIN, H_DIR_PIN);
@@ -212,7 +220,7 @@ void sendStatus(bool movementComplete, bool calibrationCompleteFlag, bool yawHom
     return;
   }
 
-  StaticJsonDocument<512> doc;
+  StaticJsonDocument<768> doc;
   JsonObject status = doc.createNestedObject("status");
   status["calibrated"] = angularPositioningEnabled;
   status["calibrating"] = calibrationInProgress;
@@ -243,6 +251,9 @@ void sendStatus(bool movementComplete, bool calibrationCompleteFlag, bool yawHom
     doc["yawHomed"] = yawHomed;
     doc["tiltCalibrated"] = tiltCalibrated;
   }
+
+  JsonArray errors = doc.createNestedArray("errors");
+  appendErrors(errors);
 
   String responseStr;
   serializeJson(doc, responseStr);
@@ -719,12 +730,14 @@ bool moveToAbsoluteAngle(float horizontalDegrees, float verticalDegrees)
   if (calibrationInProgress)
   {
     Serial.println("Calibration in progress - cannot move to angle");
+    recordError("Move rejected: calibration in progress");
     return false;
   }
 
   if (!angularPositioningEnabled)
   {
     Serial.println("Angular positioning not enabled - run calibration first");
+    recordError("Move rejected: turret not calibrated");
     return false;
   }
 
@@ -741,6 +754,7 @@ bool moveToAbsoluteAngle(float horizontalDegrees, float verticalDegrees)
   {
     Serial.printf("Vertical target %.2f° (pos %ld) exceeds limits [%ld, %ld]\n",
                   verticalDegrees, targetVerticalPosition, downLimitPosition, upLimitPosition);
+    recordError("Move rejected: vertical target out of limits");
     return false;
   }
 
@@ -762,12 +776,14 @@ bool moveByRelativeAngle(float horizontalDegrees, float verticalDegrees)
   if (calibrationInProgress)
   {
     Serial.println("Calibration in progress - cannot move by relative angle");
+    recordError("Relative move rejected: calibration in progress");
     return false;
   }
 
   if (!angularPositioningEnabled)
   {
     Serial.println("Angular positioning not enabled - run calibration first");
+    recordError("Relative move rejected: turret not calibrated");
     return false;
   }
 
@@ -783,6 +799,7 @@ bool moveByRelativeAngle(float horizontalDegrees, float verticalDegrees)
   if (targetVerticalPosition < downLimitPosition || targetVerticalPosition > upLimitPosition)
   {
     Serial.printf("Relative vertical move %.2f° would exceed limits\n", verticalDegrees);
+    recordError("Relative move rejected: vertical target out of limits");
     return false;
   }
 
@@ -814,6 +831,37 @@ void getCurrentAngles(float &horizontalAngle, float &verticalAngle)
   float absoluteYaw = wrapTo360(stepsToDegrees(horizontalOffset, true));
   horizontalAngle = wrapTo180(absoluteYaw); // Report in -180..180 for easier readability
   verticalAngle = stepsToDegrees(verticalOffset, false);
+}
+
+void appendErrors(JsonArray &arr)
+{
+  for (size_t i = 0; i < errorLogCount; i++)
+  {
+    size_t idx = (errorLogHead + MAX_ERROR_LOG - errorLogCount + i) % MAX_ERROR_LOG;
+    arr.add(errorLog[idx]);
+  }
+}
+
+void recordError(const String &msg)
+{
+  errorLog[errorLogHead] = msg;
+  errorLogHead = (errorLogHead + 1) % MAX_ERROR_LOG;
+  if (errorLogCount < MAX_ERROR_LOG)
+  {
+    errorLogCount++;
+  }
+
+  // Push immediate notification to connected clients
+  if (ws.count() > 0)
+  {
+    StaticJsonDocument<196> doc;
+    doc["error"] = msg;
+    JsonArray errors = doc.createNestedArray("errors");
+    appendErrors(errors);
+    String payload;
+    serializeJson(doc, payload);
+    ws.textAll(payload);
+  }
 }
 
 bool moveToCenter()
@@ -1091,13 +1139,14 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
   case WS_EVT_DATA:
   {
     StaticJsonDocument<200> doc;
-    DeserializationError error = deserializeJson(doc, data, len);
-    if (error)
-    {
-      Serial.print("deserializeJson() failed: ");
-      Serial.println(error.c_str());
-      return;
-    }
+  DeserializationError error = deserializeJson(doc, data, len);
+  if (error)
+  {
+    Serial.print("deserializeJson() failed: ");
+    Serial.println(error.c_str());
+    recordError("Bad JSON from client");
+    return;
+  }
     if (doc.containsKey("x"))
     {
       joystickX = doc["x"].as<float>();
@@ -1148,10 +1197,11 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
       {
         startBurstFire();
       }
-      else
-      {
-        Serial.println("Unknown fire mode: " + fireMode);
-      }
+    else
+    {
+      Serial.println("Unknown fire mode: " + fireMode);
+      recordError("Unknown fire mode: " + fireMode);
+    }
     }
 
     // Check for angular movement commands

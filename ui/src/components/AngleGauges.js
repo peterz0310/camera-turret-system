@@ -3,8 +3,24 @@
 import React from "react";
 
 export function AngleGauges({ angles, status }) {
+  const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+  const roundTo = (value, decimals = 1) => {
+    const factor = 10 ** decimals;
+    let rounded = Math.round(value * factor) / factor;
+    if (Object.is(rounded, -0)) rounded = 0;
+    return rounded;
+  };
+  const formatAngle = (value, decimals = 1) => roundTo(value, decimals).toFixed(decimals);
+  const formatWrappedAngle = (value, wrapAt = 360, decimals = 1) => {
+    let rounded = roundTo(value, decimals);
+    if (rounded >= wrapAt) rounded = 0;
+    return rounded.toFixed(decimals);
+  };
+
   const yawAngleDeg = angles ? ((angles.horizontal % 360) + 360) % 360 : 0;
-  const tiltAngleDeg = angles ? Math.max(-90, Math.min(90, angles.vertical)) : 0;
+  const tiltAngleDeg = angles ? clamp(angles.vertical, -90, 90) : 0;
+  const yawLabel = formatWrappedAngle(yawAngleDeg, 360, 1);
+  const tiltLabel = formatAngle(tiltAngleDeg, 1);
   const calibrated = status?.calibrated;
   const calibrating = status?.calibrating;
   const yawHome = status?.sensors?.yawHome;
@@ -27,7 +43,7 @@ export function AngleGauges({ angles, status }) {
           <line x1={center} y1={center} x2={x} y2={y} stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
           <circle cx={center} cy={center} r="4" fill="currentColor" />
           <text x={center} y={center + 6} textAnchor="middle" className="fill-cyan-300 text-sm font-mono">
-            {yawAngleDeg.toFixed(1)}°
+            {yawLabel}°
           </text>
         </svg>
       </div>
@@ -57,7 +73,7 @@ export function AngleGauges({ angles, status }) {
           <line x1={centerX} y1={centerY} x2={x} y2={y} stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
           <circle cx={centerX} cy={centerY} r="4" fill="currentColor" />
           <text x={centerX} y={centerY - radius - 6} textAnchor="middle" className="fill-cyan-300 text-sm font-mono">
-            {tiltAngleDeg.toFixed(1)}°
+            {tiltLabel}°
           </text>
         </svg>
       </div>

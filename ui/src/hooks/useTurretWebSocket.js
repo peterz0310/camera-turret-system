@@ -13,6 +13,7 @@ export function useTurretWebSocket(url) {
   const [status, setStatus] = useState(null);
   const [currentAngles, setCurrentAngles] = useState(null);
   const [isMoving, setIsMoving] = useState(false);
+  const [messages, setMessages] = useState([]);
 
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
@@ -78,6 +79,11 @@ export function useTurretWebSocket(url) {
             setIsMoving(!!data.status.movement.angularInProgress || !!data.status.movement.isMoving);
           }
         }
+        if (data.errors) {
+          setMessages(data.errors);
+        } else if (data.error) {
+          setMessages((prev) => [...prev.slice(-9), data.error]);
+        }
         if (data.currentAngles) {
           setCurrentAngles(data.currentAngles);
         }
@@ -117,6 +123,7 @@ export function useTurretWebSocket(url) {
     status,
     currentAngles,
     isMoving,
+    messages,
     sendCommand,
     connect,
     disconnect,

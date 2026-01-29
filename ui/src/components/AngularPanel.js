@@ -6,7 +6,6 @@ import { RotateCcw, ArrowUp, ArrowDown, ArrowLeft, ArrowRight } from "lucide-rea
 export function AngularPanel({
   connected,
   isMoving,
-  currentAngles,
   onMove,
   onCenter,
   stepSize,
@@ -39,17 +38,6 @@ export function AngularPanel({
         <div className="absolute bottom-full left-0 mb-3 bg-black/70 border border-cyan-500/30 rounded-md p-4 w-80 shadow-2xl backdrop-blur-md animate-fadeIn">
           <div className="space-y-4">
             <h3 className="text-sm font-bold text-cyan-400 mb-2 uppercase tracking-wider">Angular Positioning</h3>
-
-            {/* Current Position Display */}
-            {currentAngles && (
-              <div className="bg-gray-800/50 p-3 rounded border border-gray-600">
-                <div className="text-xs text-gray-400 mb-1">CURRENT POSITION</div>
-                <div className="flex justify-between text-sm">
-                  <span>H: {currentAngles.horizontal.toFixed(2)}°</span>
-                  <span>V: {currentAngles.vertical.toFixed(2)}°</span>
-                </div>
-              </div>
-            )}
 
             {/* Step Size Control */}
             <div className="space-y-2">
@@ -128,6 +116,7 @@ export function AngularPanel({
               <div className="text-xs text-gray-500">
                 <div className="font-mono">WASD/Arrow Keys: Move</div>
                 <div className="font-mono">H/Home: Center</div>
+                <div className="font-mono">1-6: Step Size</div>
               </div>
             </div>
           </div>

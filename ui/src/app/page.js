@@ -22,6 +22,7 @@ const CAMERA_STREAM_BASE_URL =
   process.env.NEXT_PUBLIC_CAMERA_STREAM_BASE_URL || "http://192.168.4.57:8081";
 const CAMERA_STREAM_URL = `${CAMERA_STREAM_BASE_URL}/stream`;
 const API_URL = `${CAMERA_STREAM_BASE_URL}/api`;
+const ANGULAR_STEP_OPTIONS = [1, 5, 10, 15, 30, 45];
 
 
 function App() {
@@ -32,6 +33,7 @@ function App() {
     status,
     currentAngles,
     isMoving,
+    messages,
     sendCommand,
     connect: connectWebSocket,
     disconnect: disconnectWebSocket,
@@ -53,6 +55,7 @@ function App() {
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [fpsInfo, setFpsInfo] = useState({});
   const [fpsSliderOpen, setFpsSliderOpen] = useState(false);
+  const [logsOpen, setLogsOpen] = useState(false);
   
   // Angular motion state
   const [angularStepSize, setAngularStepSize] = useState(10);
@@ -60,6 +63,7 @@ function App() {
   const crosshairPanelRef = useRef(null);
   const aiPanelRef = useRef(null);
   const fpsSliderRef = useRef(null);
+  const logPanelRef = useRef(null);
 
   // --- COMPONENT LIFECYCLE & EFFECTS ---
   useEffect(() => {
@@ -98,6 +102,9 @@ function App() {
       if (fpsSliderRef.current && !fpsSliderRef.current.contains(event.target)) {
         setFpsSliderOpen(false);
       }
+      if (logPanelRef.current && !logPanelRef.current.contains(event.target)) {
+        setLogsOpen(false);
+      }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
@@ -107,67 +114,90 @@ function App() {
   useEffect(() => {
     const handleKeyPress = (event) => {
       if (!connected || triggerActive) return;
-      
-      switch (event.key.toLowerCase()) {
-        case ' ':
-        case 'f':
+      const target = event.target;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      const code = event.code;
+
+      if (event.shiftKey && (code === 'Digit1' || code === 'Digit2' || key === '1' || key === '2')) {
+        event.preventDefault();
+        const modelKeys = Object.keys(availableModels);
+        const modelIndex = code === 'Digit2' || key === '2' ? 1 : 0;
+        if (modelKeys[modelIndex]) {
+          handleModelSwitch(modelKeys[modelIndex]);
+        }
+        return;
+      }
+
+      const stepMatch = code ? code.match(/^(Digit|Numpad)([1-6])$/) : null;
+      if (!event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
+        const stepIndex = stepMatch ? parseInt(stepMatch[2], 10) - 1 : null;
+        const stepSize =
+          stepIndex !== null
+            ? ANGULAR_STEP_OPTIONS[stepIndex]
+            : key >= '1' && key <= '6'
+              ? ANGULAR_STEP_OPTIONS[parseInt(key, 10) - 1]
+              : null;
+        if (stepSize) {
           event.preventDefault();
-          handleFireSingle();
-          break;
-        case 'b':
-        case 'v':
-          event.preventDefault();
-          handleFireBurst();
-          break;
-        case 'a':
-          event.preventDefault();
-          handleAIToggle();
-          break;
-        case '1':
-        case '2':
-          event.preventDefault();
-          const modelKeys = Object.keys(availableModels);
-          const modelIndex = parseInt(event.key) - 1;
-          if (modelKeys[modelIndex]) {
-            handleModelSwitch(modelKeys[modelIndex]);
-          }
-          break;
-        // Angular movement hotkeys
-        case 'arrowup':
-        case 'w':
-          event.preventDefault();
-          handleAngularMove(0, angularStepSize);
-          break;
-        case 'arrowdown':
-        case 's':
-          event.preventDefault();
-          handleAngularMove(0, -angularStepSize);
-          break;
-        case 'arrowleft':
-        case 'a':
-          event.preventDefault();
-          handleAngularMove(-angularStepSize, 0);
-          break;
-        case 'arrowright':
-        case 'd':
-          event.preventDefault();
-          handleAngularMove(angularStepSize, 0);
-          break;
-        case 'home':
-        case 'h':
-          event.preventDefault();
-          handleMoveToCenter();
-          break;
-        case 'r':
-          event.preventDefault();
-          handleHome();
-          break;
+          handleStepSizeChange(stepSize);
+          return;
+        }
+      }
+
+      if (key === ' ' || code === 'Space' || key === 'f') {
+        event.preventDefault();
+        handleFireSingle();
+        return;
+      }
+      if (key === 'b' || key === 'v') {
+        event.preventDefault();
+        handleFireBurst();
+        return;
+      }
+      if (key === 'arrowup' || code === 'ArrowUp' || key === 'w' || code === 'KeyW') {
+        event.preventDefault();
+        handleAngularMove(0, angularStepSize);
+        return;
+      }
+      if (key === 'arrowdown' || code === 'ArrowDown' || key === 's' || code === 'KeyS') {
+        event.preventDefault();
+        handleAngularMove(0, -angularStepSize);
+        return;
+      }
+      if (key === 'arrowleft' || code === 'ArrowLeft' || key === 'a' || code === 'KeyA') {
+        event.preventDefault();
+        handleAngularMove(-angularStepSize, 0);
+        return;
+      }
+      if (key === 'arrowright' || code === 'ArrowRight' || key === 'd' || code === 'KeyD') {
+        event.preventDefault();
+        handleAngularMove(angularStepSize, 0);
+        return;
+      }
+      if (key === 'home' || code === 'Home' || key === 'h' || code === 'KeyH') {
+        event.preventDefault();
+        handleMoveToCenter();
+        return;
+      }
+      if (key === 'r' || code === 'KeyR') {
+        event.preventDefault();
+        handleHome();
       }
     };
 
     document.addEventListener('keydown', handleKeyPress);
     return () => document.removeEventListener('keydown', handleKeyPress);
-  }, [connected, triggerActive, aiMode, angularStepSize]); // Added angularStepSize dependency
+  }, [connected, triggerActive, angularStepSize, availableModels, isMoving, aiMode, currentModel]); // Added angularStepSize dependency
 
   // --- EVENT HANDLERS ---
   const handleStreamLoad = () => {
@@ -450,7 +480,6 @@ function App() {
         <AngularPanel
           connected={connected}
           isMoving={isMoving}
-          currentAngles={currentAngles}
           onMove={handleAngularMove}
           onCenter={handleMoveToCenter}
           stepSize={angularStepSize}
@@ -576,6 +605,37 @@ function App() {
           )}
         </div>
 
+        {/* Debug / Error Log */}
+        <div className="relative pointer-events-auto" ref={logPanelRef}>
+          <button
+            onClick={() => setLogsOpen(!logsOpen)}
+            className={`${controlButtonClass} justify-between w-full ${messages?.length ? 'border-orange-400/50 text-orange-300 hover:text-orange-200' : ''}`}
+          >
+            <div className="flex items-center gap-2">
+              <Zap className="w-5 h-5" />
+              <span>Debug Log</span>
+            </div>
+            <span className="text-xs opacity-80">{messages?.length || 0}</span>
+          </button>
+
+          {logsOpen && (
+            <div className="absolute bottom-full left-0 mb-3 bg-black/70 border border-cyan-500/30 rounded-md p-4 w-80 shadow-2xl backdrop-blur-md animate-fadeIn max-h-64 overflow-y-auto">
+              <h3 className="text-sm font-bold text-cyan-400 mb-3 uppercase tracking-wider">Recent messages</h3>
+              {messages && messages.length ? (
+                <ul className="space-y-2 text-xs text-gray-200">
+                  {messages.map((msg, idx) => (
+                    <li key={`${idx}-${msg}`} className="p-2 bg-gray-800/60 rounded border border-gray-700/70">
+                      {msg}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="text-gray-400 text-xs">No messages yet.</div>
+              )}
+            </div>
+          )}
+        </div>
+
       </div>
 
 
@@ -598,13 +658,13 @@ function App() {
               <div><span className="text-cyan-300">F/SPACE:</span> Single Fire</div>
               <div><span className="text-cyan-300">B/V:</span> Burst Fire</div>
               <div><span className="text-cyan-300">R:</span> Home</div>
-              <div><span className="text-cyan-300">A:</span> Toggle AI</div>
               <div><span className="text-cyan-300">WASD/Arrows:</span> Angular Move</div>
               <div><span className="text-cyan-300">H/Home:</span> Center Position</div>
+              <div><span className="text-cyan-300">1-6:</span> Step Size</div>
               {Object.keys(availableModels).length > 0 && (
                 <>
-                  <div><span className="text-cyan-300">1:</span> MobileNet Model</div>
-                  <div><span className="text-cyan-300">2:</span> YOLO Model</div>
+                  <div><span className="text-cyan-300">Shift+1:</span> MobileNet Model</div>
+                  <div><span className="text-cyan-300">Shift+2:</span> YOLO Model</div>
                 </>
               )}
             </div>
