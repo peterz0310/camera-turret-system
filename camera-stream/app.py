@@ -49,7 +49,7 @@ except ImportError as e:
 
 load_dotenv()
 
-ESP32_CAM_URL = os.getenv("ESP32_CAM_URL", "http://192.168.4.1/stream")
+ESP32_CAM_URL = os.getenv("ESP32_CAM_URL", "http://192.168.4.62/stream")
 REQUEST_TIMEOUT = 2.0
 RECONNECT_DELAY = 1.0 # How long to show static before retrying connection
 STATIC_FRAME_WIDTH = 640
@@ -70,6 +70,7 @@ class AIStreamProcessor:
         self.models = {}
         self.detection_fps = 2  # Will be adjusted per model
         self.latest_detections = []
+        self.latest_detection_ts = 0.0
         self.last_detection_time = 0
         
         # Threading for async AI processing
@@ -171,6 +172,7 @@ class AIStreamProcessor:
         
         # Clear previous detections when switching models
         self.latest_detections = []
+        self.latest_detection_ts = 0.0
         
         print(f"🔄 Switched from {self.model_configs[old_model]['name']} to {self.model_configs[model_name]['name']}")
         print(f"   FPS: {self.detection_fps}")
@@ -236,6 +238,7 @@ class AIStreamProcessor:
                 )
                 
                 self.latest_detections = scaled_detections
+                self.latest_detection_ts = time.time()
                 if len(scaled_detections) > 0:
                     print(f"🎯 {self.model_configs[self.current_model]['name']} detected {len(scaled_detections)} person(s)")
         except Exception as e:
@@ -638,6 +641,9 @@ def toggle_ai():
                 }, 400)
 
         ai_processor.enabled = bool(enabled)
+        if not ai_processor.enabled:
+            ai_processor.latest_detections = []
+            ai_processor.latest_detection_ts = 0.0
         
         # Start or stop the processing thread based on state
         if ai_processor.enabled and ai_processor.current_model in ai_processor.models:
@@ -671,7 +677,7 @@ def get_detections():
         "ai_enabled": ai_processor.enabled,
         "current_model": ai_processor.current_model,
         "model_info": ai_processor.model_configs[ai_processor.current_model],
-        "timestamp": time.time()
+        "timestamp": ai_processor.latest_detection_ts
     })
 
 @app.route("/api/models")

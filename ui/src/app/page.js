@@ -23,6 +23,14 @@ const CAMERA_STREAM_BASE_URL =
 const CAMERA_STREAM_URL = `${CAMERA_STREAM_BASE_URL}/stream`;
 const API_URL = `${CAMERA_STREAM_BASE_URL}/api`;
 const ANGULAR_STEP_OPTIONS = [1, 5, 10, 15, 30, 45];
+const AUTO_AIM_HFOV_DEG = 65;
+const AUTO_AIM_DEADZONE_DEG = 0.5;
+const AUTO_AIM_MAX_STEP_DEG = 2.0;
+const AUTO_AIM_MIN_COMMAND_INTERVAL_MS = 120;
+const AUTO_AIM_DETECTION_STALE_MS = 700;
+const AUTO_AIM_KP = 0.45;
+const AUTO_AIM_YAW_SIGN = 1;
+const AUTO_AIM_PITCH_SIGN = 1;
 
 
 function App() {
@@ -56,6 +64,7 @@ function App() {
   const [fpsInfo, setFpsInfo] = useState({});
   const [fpsSliderOpen, setFpsSliderOpen] = useState(false);
   const [logsOpen, setLogsOpen] = useState(false);
+  const [autoAimEnabled, setAutoAimEnabled] = useState(false);
   
   // Angular motion state
   const [angularStepSize, setAngularStepSize] = useState(10);
@@ -64,6 +73,14 @@ function App() {
   const aiPanelRef = useRef(null);
   const fpsSliderRef = useRef(null);
   const logPanelRef = useRef(null);
+  const streamImgRef = useRef(null);
+  const autoAimInFlightRef = useRef(false);
+  const autoAimLastCommandRef = useRef(0);
+  const autoAimEnabledRef = useRef(false);
+  const aiModeRef = useRef(false);
+  const currentModelRef = useRef('mobilenet');
+  const statusRef = useRef(null);
+  const connectedRef = useRef(false);
 
   // --- COMPONENT LIFECYCLE & EFFECTS ---
   useEffect(() => {
@@ -109,6 +126,26 @@ function App() {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  useEffect(() => {
+    autoAimEnabledRef.current = autoAimEnabled;
+  }, [autoAimEnabled]);
+
+  useEffect(() => {
+    aiModeRef.current = aiMode;
+  }, [aiMode]);
+
+  useEffect(() => {
+    currentModelRef.current = currentModel;
+  }, [currentModel]);
+
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
+
+  useEffect(() => {
+    connectedRef.current = connected;
+  }, [connected]);
 
   // Keyboard shortcuts for trigger controls
   useEffect(() => {
@@ -212,6 +249,19 @@ function App() {
     setStreamError("Primary video feed is offline. Check camera service integrity.");
   };
 
+  const disableAutoAim = (reason) => {
+    if (!autoAimEnabledRef.current) return;
+    autoAimEnabledRef.current = false;
+    autoAimInFlightRef.current = false;
+    autoAimLastCommandRef.current = 0;
+    setAutoAimEnabled(false);
+    if (reason) {
+      console.log(`🎯 [AUTO-AIM] Disabled due to ${reason}`);
+    } else {
+      console.log("🎯 [AUTO-AIM] Disabled");
+    }
+  };
+
   const retryStream = () => {
     setIsStreamLoading(true);
     setStreamError(null);
@@ -219,14 +269,17 @@ function App() {
   };
 
   const handleMove = ({ x, y }) => {
+    disableAutoAim("manual joystick input");
     if (connected) sendCommand({ x, y });
   };
 
   const handleStop = () => {
+    disableAutoAim("manual stop");
     if (connected) sendCommand({ x: 0, y: 0 });
   };
 
   const handleHome = () => {
+    disableAutoAim("manual home request");
     if (connected) {
       sendCommand({ home: true });
       console.log("🏠 [SYS] Home command sent");
@@ -268,12 +321,14 @@ function App() {
   const handleCrosshairSizeChange = (e) => setCrosshairSize(parseInt(e.target.value));
 
   const handleTriggerControl = () => {
+    disableAutoAim("manual trigger control");
     setTriggerActive((prev) => !prev);
     if (connected) sendCommand({ trigger: !triggerActive });
   };
 
   // NEW: Handles AI toggle by calling API without reloading the stream
   const handleAIToggle = async () => {
+    disableAutoAim("manual AI toggle");
     const newAiMode = !aiMode;
     console.log(`🤖 [AI] Attempting to set mode to: ${newAiMode ? 'ENABLED' : 'DISABLED'}`);
     try {
@@ -289,6 +344,10 @@ function App() {
         // Set state from the authoritative server response
         setAiMode(data.ai_enabled);
         setCurrentModel(data.current_model);
+        if (!data.ai_enabled && autoAimEnabledRef.current) {
+          setAutoAimEnabled(false);
+          console.log("🎯 [AUTO-AIM] Disabled because AI mode was turned off");
+        }
         console.log(`✅ [AI] Mode successfully set to: ${data.ai_enabled ? 'ENABLED' : 'DISABLED'} with model: ${data.current_model}`);
       } else {
         console.error('❌ [AI] Failed to toggle AI mode:', data.message || response.status);
@@ -303,6 +362,7 @@ function App() {
   // Handle model switching
   const handleModelSwitch = async (modelName) => {
     if (modelName === currentModel) return;
+    disableAutoAim("manual model switch");
     
     console.log(`🔄 [AI] Switching to model: ${modelName}`);
     try {
@@ -318,6 +378,10 @@ function App() {
         setCurrentModel(data.current_model);
         setAiMode(data.ai_enabled);
         setAiPanelOpen(false);
+        if (autoAimEnabledRef.current && data.current_model !== 'mobilenet') {
+          setAutoAimEnabled(false);
+          console.log("🎯 [AUTO-AIM] Disabled because model switched away from MobileNet");
+        }
         console.log(`✅ [AI] Successfully switched to: ${data.current_model}`);
       } else {
         console.error('❌ [AI] Failed to switch model:', data.message || response.status);
@@ -329,6 +393,7 @@ function App() {
 
   // Handle FPS changes
   const handleFpsChange = async (modelName, newFps) => {
+    disableAutoAim("manual FPS change");
     try {
       const response = await fetch(`${API_URL}/fps`, {
         method: 'POST',
@@ -351,15 +416,206 @@ function App() {
 
   // Reset FPS to default for a model
   const handleResetFps = async (modelName) => {
+    disableAutoAim("manual FPS reset");
     const modelInfo = availableModels[modelName];
     if (modelInfo) {
       await handleFpsChange(modelName, modelInfo.default_fps);
     }
   };
 
+  const ensureAiEnabledWithModel = async (modelName) => {
+    try {
+      const response = await fetch(`${API_URL}/ai`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: true, model: modelName })
+      });
+      const data = await response.json();
+      if (response.ok && data.success) {
+        setAiMode(data.ai_enabled);
+        setCurrentModel(data.current_model);
+        return { ok: true, data };
+      }
+      console.error('❌ [AI] Failed to enable AI with model:', data.message || response.status);
+      return { ok: false, data };
+    } catch (error) {
+      console.error('❌ [AI] Network error enabling AI with model:', error);
+      return { ok: false, error };
+    }
+  };
+
+  const handleAutoAimToggle = async () => {
+    if (!connectedRef.current) {
+      console.error('❌ [AUTO-AIM] Cannot enable: WebSocket not connected');
+      return;
+    }
+
+    const nextState = !autoAimEnabledRef.current;
+    if (!nextState) {
+      disableAutoAim("manual toggle");
+      return;
+    }
+
+    const mobilenetAvailable = !!availableModels?.mobilenet;
+    const targetModel = mobilenetAvailable ? 'mobilenet' : currentModelRef.current;
+    const result = await ensureAiEnabledWithModel(targetModel);
+    if (!result.ok) {
+      setAutoAimEnabled(false);
+      return;
+    }
+
+    if (result.data.current_model !== 'mobilenet') {
+      console.warn("⚠️ [AUTO-AIM] MobileNet not available, auto-aim will remain off");
+      setAutoAimEnabled(false);
+      return;
+    }
+
+    autoAimEnabledRef.current = true;
+    setAutoAimEnabled(true);
+    console.log("🎯 [AUTO-AIM] Enabled");
+  };
+
+  useEffect(() => {
+    if (autoAimEnabled && (!aiMode || currentModel !== 'mobilenet')) {
+      disableAutoAim("AI/model change");
+    }
+  }, [autoAimEnabled, aiMode, currentModel]);
+
+  useEffect(() => {
+    if (autoAimEnabled && (!connected || status?.calibrating || (status && !status.calibrated))) {
+      disableAutoAim("missing connection or calibration");
+    }
+  }, [autoAimEnabled, connected, status]);
+
+  useEffect(() => {
+    if (!autoAimEnabled) return;
+
+    let isCancelled = false;
+    const scheduleNext = (delayMs) => {
+      if (isCancelled || !autoAimEnabledRef.current) return;
+      setTimeout(loop, delayMs);
+    };
+
+    const getIntervalMs = () => {
+      const activeModel = currentModelRef.current;
+      const modelFps = fpsInfo?.[activeModel]?.current_fps || availableModels?.[activeModel]?.current_fps || 10;
+      return Math.min(300, Math.max(80, Math.round(1000 / modelFps)));
+    };
+
+    const loop = async () => {
+      if (isCancelled || !autoAimEnabledRef.current) return;
+
+      if (!connectedRef.current) {
+        scheduleNext(300);
+        return;
+      }
+
+      const currentStatus = statusRef.current;
+      if (!currentStatus?.calibrated || currentStatus?.calibrating) {
+        scheduleNext(300);
+        return;
+      }
+
+      if (autoAimInFlightRef.current) {
+        scheduleNext(50);
+        return;
+      }
+
+      autoAimInFlightRef.current = true;
+      try {
+        const response = await fetch(`${API_URL}/detections`);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const data = await response.json();
+        const detections = Array.isArray(data?.detections) ? data.detections : [];
+        if (!data?.ai_enabled || data?.current_model !== 'mobilenet') {
+          disableAutoAim("AI unavailable");
+          scheduleNext(300);
+          return;
+        }
+        const nowMs = Date.now();
+        const detectionTimestampSec = Number.isFinite(data?.timestamp) ? data.timestamp : 0;
+        const detectionTimestampMs = detectionTimestampSec > 0 ? detectionTimestampSec * 1000 : 0;
+
+        const imgEl = streamImgRef.current;
+        const frameW = imgEl?.naturalWidth || imgEl?.width;
+        const frameH = imgEl?.naturalHeight || imgEl?.height;
+
+        const hasFreshDetections =
+          detections.length > 0 &&
+          detectionTimestampMs > 0 &&
+          (nowMs - detectionTimestampMs) <= AUTO_AIM_DETECTION_STALE_MS;
+        const hasFrame = !!frameW && !!frameH;
+
+        if (hasFreshDetections && hasFrame) {
+          const target = detections.reduce((best, current) => {
+            if (!current?.bbox || current.bbox.length !== 4) return best;
+            const [x1, y1, x2, y2] = current.bbox;
+            const area = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+            if (!best) return { detection: current, area };
+            return area > best.area ? { detection: current, area } : best;
+          }, null);
+
+          if (target?.detection) {
+            const [x1, y1, x2, y2] = target.detection.bbox;
+            const targetX = (x1 + x2) / 2;
+            const targetY = (y1 + y2) / 2;
+
+            const dx = targetX - frameW / 2;
+            const dy = targetY - frameH / 2;
+
+            const hfovRad = (AUTO_AIM_HFOV_DEG * Math.PI) / 180;
+            const vfovRad = 2 * Math.atan(Math.tan(hfovRad / 2) * (frameH / frameW));
+            const fx = frameW / (2 * Math.tan(hfovRad / 2));
+            const fy = frameH / (2 * Math.tan(vfovRad / 2));
+            const yawErrorDeg = (Math.atan(dx / fx) * 180) / Math.PI;
+            const pitchErrorDeg = (Math.atan(dy / fy) * 180) / Math.PI;
+
+            if (Math.abs(yawErrorDeg) >= AUTO_AIM_DEADZONE_DEG || Math.abs(pitchErrorDeg) >= AUTO_AIM_DEADZONE_DEG) {
+              const nowCommandMs = Date.now();
+              if (nowCommandMs - autoAimLastCommandRef.current >= AUTO_AIM_MIN_COMMAND_INTERVAL_MS) {
+                const yawStep = Math.max(
+                  -AUTO_AIM_MAX_STEP_DEG,
+                  Math.min(AUTO_AIM_MAX_STEP_DEG, yawErrorDeg * AUTO_AIM_KP)
+                );
+                const pitchStep = Math.max(
+                  -AUTO_AIM_MAX_STEP_DEG,
+                  Math.min(AUTO_AIM_MAX_STEP_DEG, pitchErrorDeg * AUTO_AIM_KP)
+                );
+
+                if ((Math.abs(yawStep) >= 0.05 || Math.abs(pitchStep) >= 0.05) && autoAimEnabledRef.current) {
+                  autoAimLastCommandRef.current = nowCommandMs;
+                  sendCommand({
+                    moveByAngle: {
+                      horizontal: yawStep * AUTO_AIM_YAW_SIGN,
+                      vertical: pitchStep * AUTO_AIM_PITCH_SIGN
+                    }
+                  });
+                }
+              }
+            }
+          }
+        }
+      } catch (error) {
+        console.error("❌ [AUTO-AIM] Detection loop error:", error);
+      } finally {
+        autoAimInFlightRef.current = false;
+      }
+
+      scheduleNext(getIntervalMs());
+    };
+
+    loop();
+    return () => {
+      isCancelled = true;
+    };
+  }, [autoAimEnabled, availableModels, fpsInfo, sendCommand]);
+
   // --- ANGULAR MOTION HELPERS ---
   function sendMoveByAngle(h, v) {
     if (connected) {
+      disableAutoAim("manual angular move");
       markMoving();
       sendCommand({ moveByAngle: { horizontal: h, vertical: v } });
       console.log(`🎯 [ANGULAR] Moving by H:${h}°, V:${v}°`);
@@ -368,6 +624,7 @@ function App() {
   
   function sendMoveToCenter() {
     if (connected) {
+      disableAutoAim("manual move-to-center");
       markMoving();
       sendCommand({ moveToCenter: true });
       console.log('🎯 [ANGULAR] Moving to center position');
@@ -386,8 +643,19 @@ function App() {
   };
 
   const handleStepSizeChange = (newSize) => {
+    disableAutoAim("manual step size change");
     setAngularStepSize(newSize);
     console.log(`🎯 [ANGULAR] Step size changed to ${newSize}°`);
+  };
+
+  const handleConnectionToggle = () => {
+    if (connected) {
+      disableAutoAim("manual disconnect");
+      disconnectWebSocket();
+    } else {
+      disableAutoAim("manual connect");
+      connectWebSocket();
+    }
   };
 
   // --- STYLING & CLASSES ---
@@ -516,6 +784,25 @@ function App() {
                     }`}
                   >
                     {aiMode ? 'ENABLED' : 'DISABLED'}
+                  </button>
+                </div>
+
+                {/* Auto Aim Toggle */}
+                <div className="flex items-center justify-between p-3 bg-gray-800/50 rounded border border-gray-600">
+                  <div className="flex flex-col">
+                    <span className="text-sm font-mono">Auto Aim</span>
+                    <span className="text-[10px] uppercase tracking-wider text-gray-400">Center bbox • MobileNet only</span>
+                  </div>
+                  <button
+                    onClick={handleAutoAimToggle}
+                    disabled={!connected}
+                    className={`px-3 py-1 rounded text-xs font-mono transition-colors ${
+                      autoAimEnabled
+                        ? 'bg-cyan-600 text-white hover:bg-cyan-700'
+                        : 'bg-gray-600 text-gray-300 hover:bg-gray-500'
+                    }`}
+                  >
+                    {autoAimEnabled ? 'ENABLED' : 'DISABLED'}
                   </button>
                 </div>
 
@@ -680,6 +967,12 @@ function App() {
                 <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
                 <span className="text-green-300">{availableModels[currentModel]?.name || currentModel} Active</span>
               </div>
+              {autoAimEnabled && (
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 bg-cyan-400 rounded-full animate-pulse"></div>
+                  <span className="text-cyan-300">Auto Aim Engaged</span>
+                </div>
+              )}
               <div><span className="text-green-300">Target FPS:</span> {availableModels[currentModel]?.fps || 'N/A'}</div>
               <div className="text-xs opacity-70">{availableModels[currentModel]?.description || 'Person Detection'}</div>
             </div>
@@ -695,7 +988,7 @@ function App() {
 
         {/* Connect/Disconnect */}
         <button
-            onClick={connected ? disconnectWebSocket : connectWebSocket}
+            onClick={handleConnectionToggle}
             disabled={connecting}
             className={`${controlButtonClass} ${connected ? 'text-red-400 border-red-400/30 hover:bg-red-400/20' : ''}`}
         >
@@ -725,11 +1018,12 @@ function App() {
                 <>
                     {streamUrl && (
                         <img
-                            src={streamUrl}
-                            alt="Sentry Camera Feed"
-                            className={`w-full h-full object-cover transition-opacity duration-500 ${isStreamLoading ? 'opacity-0' : 'opacity-100'}`}
-                            onLoad={handleStreamLoad}
-                            onError={handleStreamError}
+                          ref={streamImgRef}
+                          src={streamUrl}
+                          alt="Sentry Camera Feed"
+                          className={`w-full h-full object-cover transition-opacity duration-500 ${isStreamLoading ? 'opacity-0' : 'opacity-100'}`}
+                          onLoad={handleStreamLoad}
+                          onError={handleStreamError}
                         />
                     )}
 

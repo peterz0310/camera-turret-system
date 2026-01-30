@@ -14,7 +14,7 @@ A Flask server that proxies the ESP32-CAM MJPEG stream, adds optional AI person 
 Edit `.env` to configure your camera URL:
 
 ```env
-ESP32_CAM_URL=http://192.168.4.1/stream
+ESP32_CAM_URL=http://192.168.4.62/stream
 ```
 
 ## Endpoints
@@ -34,6 +34,7 @@ The AI detection system supports multiple models with MobileNet-SSD as the defau
 Detections are computed asynchronously at a configurable FPS and drawn into the outgoing stream.
 
 ### Default Model: MobileNet-SSD
+
 - **Detection Rate**: 15 FPS default (configurable per model)
 - **Stream Rate**: Full camera framerate; detections are overlaid as they arrive
 - **Model**: MobileNet-SSD v2 via TensorFlow Hub (downloads on first run)
@@ -42,6 +43,7 @@ Detections are computed asynchronously at a configurable FPS and drawn into the 
 - **Description**: Fast inference, good balance of speed and accuracy
 
 ### Alternative Model: YOLOv8n
+
 - **Detection Rate**: 4 FPS default (configurable per model)
 - **Model**: YOLOv8n (nano) via ultralytics (weights download on first run)
 - **Classes**: Person detection only
@@ -50,6 +52,7 @@ Detections are computed asynchronously at a configurable FPS and drawn into the 
 ## Usage Examples
 
 ### Toggle AI Mode via API
+
 ```bash
 # Enable AI
 curl -X POST http://localhost:8081/api/ai -H "Content-Type: application/json" -d '{"enabled": true}'
@@ -59,9 +62,11 @@ curl -X POST http://localhost:8081/api/ai -H "Content-Type: application/json" -d
 ```
 
 ### Get Detection Data
+
 ```bash
 curl http://localhost:8081/api/detections
 ```
 
 ### Stream URLs
+
 - Stream (raw or annotated depending on AI state): `http://localhost:8081/stream`
