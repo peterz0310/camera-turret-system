@@ -67,6 +67,15 @@ function App() {
   const [fpsSliderOpen, setFpsSliderOpen] = useState(false);
   const [logsOpen, setLogsOpen] = useState(false);
   const [autoAimEnabled, setAutoAimEnabled] = useState(false);
+  const [autoAimPanelOpen, setAutoAimPanelOpen] = useState(false);
+  const [autoAimSettings, setAutoAimSettings] = useState({
+    kp: AUTO_AIM_KP,
+    maxStep: AUTO_AIM_MAX_STEP_DEG,
+    minStep: AUTO_AIM_MIN_STEP_DEG,
+    deadzone: AUTO_AIM_DEADZONE_DEG,
+    intervalMs: AUTO_AIM_MIN_COMMAND_INTERVAL_MS,
+    smoothing: AUTO_AIM_ERROR_ALPHA
+  });
   
   // Angular motion state
   const [angularStepSize, setAngularStepSize] = useState(10);
@@ -83,6 +92,14 @@ function App() {
   const autoAimPitchErrorRef = useRef(0);
   const autoAimHasErrorRef = useRef(false);
   const autoAimLastDetectionRef = useRef(0);
+  const autoAimSettingsRef = useRef({
+    kp: AUTO_AIM_KP,
+    maxStep: AUTO_AIM_MAX_STEP_DEG,
+    minStep: AUTO_AIM_MIN_STEP_DEG,
+    deadzone: AUTO_AIM_DEADZONE_DEG,
+    intervalMs: AUTO_AIM_MIN_COMMAND_INTERVAL_MS,
+    smoothing: AUTO_AIM_ERROR_ALPHA
+  });
   const aiModeRef = useRef(false);
   const currentModelRef = useRef('mobilenet');
   const statusRef = useRef(null);
@@ -152,6 +169,10 @@ function App() {
   useEffect(() => {
     connectedRef.current = connected;
   }, [connected]);
+
+  useEffect(() => {
+    autoAimSettingsRef.current = autoAimSettings;
+  }, [autoAimSettings]);
 
   // Keyboard shortcuts for trigger controls
   useEffect(() => {
@@ -556,6 +577,15 @@ function App() {
             const fy = frameH / (2 * Math.tan(vfovRad / 2));
             const yawErrorDeg = (Math.atan(dx / fx) * 180) / Math.PI;
             const pitchErrorDeg = (Math.atan(dy / fy) * 180) / Math.PI;
+            const {
+              kp,
+              maxStep,
+              minStep,
+              deadzone,
+              intervalMs,
+              smoothing
+            } = autoAimSettingsRef.current;
+
             const filterReset =
               !autoAimHasErrorRef.current ||
               (nowMs - autoAimLastDetectionRef.current) > AUTO_AIM_DETECTION_STALE_MS;
@@ -564,9 +594,9 @@ function App() {
               autoAimPitchErrorRef.current = pitchErrorDeg;
             } else {
               autoAimYawErrorRef.current =
-                autoAimYawErrorRef.current + (yawErrorDeg - autoAimYawErrorRef.current) * AUTO_AIM_ERROR_ALPHA;
+                autoAimYawErrorRef.current + (yawErrorDeg - autoAimYawErrorRef.current) * smoothing;
               autoAimPitchErrorRef.current =
-                autoAimPitchErrorRef.current + (pitchErrorDeg - autoAimPitchErrorRef.current) * AUTO_AIM_ERROR_ALPHA;
+                autoAimPitchErrorRef.current + (pitchErrorDeg - autoAimPitchErrorRef.current) * smoothing;
             }
             autoAimHasErrorRef.current = true;
             autoAimLastDetectionRef.current = nowMs;
@@ -574,19 +604,19 @@ function App() {
             const filteredYawError = autoAimYawErrorRef.current;
             const filteredPitchError = autoAimPitchErrorRef.current;
 
-            if (Math.abs(filteredYawError) >= AUTO_AIM_DEADZONE_DEG || Math.abs(filteredPitchError) >= AUTO_AIM_DEADZONE_DEG) {
+            if (Math.abs(filteredYawError) >= deadzone || Math.abs(filteredPitchError) >= deadzone) {
               const nowCommandMs = Date.now();
-              if (nowCommandMs - autoAimLastCommandRef.current >= AUTO_AIM_MIN_COMMAND_INTERVAL_MS) {
+              if (nowCommandMs - autoAimLastCommandRef.current >= intervalMs) {
                 const yawStep = Math.max(
-                  -AUTO_AIM_MAX_STEP_DEG,
-                  Math.min(AUTO_AIM_MAX_STEP_DEG, filteredYawError * AUTO_AIM_KP)
+                  -maxStep,
+                  Math.min(maxStep, filteredYawError * kp)
                 );
                 const pitchStep = Math.max(
-                  -AUTO_AIM_MAX_STEP_DEG,
-                  Math.min(AUTO_AIM_MAX_STEP_DEG, filteredPitchError * AUTO_AIM_KP)
+                  -maxStep,
+                  Math.min(maxStep, filteredPitchError * kp)
                 );
 
-                const clampMinStep = (value) => (Math.abs(value) < AUTO_AIM_MIN_STEP_DEG ? 0 : value);
+                const clampMinStep = (value) => (Math.abs(value) < minStep ? 0 : value);
                 let yawCommand = clampMinStep(yawStep) * AUTO_AIM_YAW_SIGN;
                 let pitchCommand = clampMinStep(pitchStep) * AUTO_AIM_PITCH_SIGN;
 
@@ -596,7 +626,7 @@ function App() {
                 if (pitchCommand > 0 && tiltUp) pitchCommand = 0;
                 if (pitchCommand < 0 && tiltDown) pitchCommand = 0;
 
-                if ((Math.abs(yawCommand) >= AUTO_AIM_MIN_STEP_DEG || Math.abs(pitchCommand) >= AUTO_AIM_MIN_STEP_DEG) && autoAimEnabledRef.current) {
+                if ((Math.abs(yawCommand) >= minStep || Math.abs(pitchCommand) >= minStep) && autoAimEnabledRef.current) {
                   autoAimLastCommandRef.current = nowCommandMs;
                   sendCommand({
                     moveByAngle: {
@@ -796,6 +826,121 @@ function App() {
           {!autoAimEnabled && autoAimBlockedReason && (
             <div className="mt-1 text-[10px] uppercase tracking-wider text-gray-400">
               {autoAimBlockedReason}
+            </div>
+          )}
+        </div>
+
+        <div className="relative pointer-events-auto">
+          <button
+            onClick={() => setAutoAimPanelOpen(!autoAimPanelOpen)}
+            className={`${controlButtonClass} justify-between w-full`}
+          >
+            <div className="flex items-center gap-2">
+              <Crosshair className="w-5 h-5" />
+              <span>Auto Aim Tuning</span>
+            </div>
+            <ChevronDown className={`w-4 h-4 transition-transform ${autoAimPanelOpen ? 'rotate-180' : ''}`} />
+          </button>
+          {autoAimPanelOpen && (
+            <div className="absolute bottom-full left-0 mb-3 bg-black/70 border border-cyan-500/30 rounded-md p-4 w-80 shadow-2xl backdrop-blur-md animate-fadeIn">
+              <div className="space-y-3 text-xs font-mono">
+                <div className="flex items-center justify-between">
+                  <span className="uppercase tracking-wider text-cyan-400">Auto Aim Tuning</span>
+                  <button
+                    onClick={() =>
+                      setAutoAimSettings({
+                        kp: AUTO_AIM_KP,
+                        maxStep: AUTO_AIM_MAX_STEP_DEG,
+                        minStep: AUTO_AIM_MIN_STEP_DEG,
+                        deadzone: AUTO_AIM_DEADZONE_DEG,
+                        intervalMs: AUTO_AIM_MIN_COMMAND_INTERVAL_MS,
+                        smoothing: AUTO_AIM_ERROR_ALPHA
+                      })
+                    }
+                    className="px-2 py-1 border border-gray-600 hover:border-cyan-400 text-gray-300 hover:text-cyan-300 rounded transition-colors text-[10px]"
+                  >
+                    RESET
+                  </button>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] uppercase tracking-wider text-gray-400">Response (Kp): {autoAimSettings.kp.toFixed(2)}</label>
+                  <input
+                    type="range"
+                    min="0.1"
+                    max="1.2"
+                    step="0.05"
+                    value={autoAimSettings.kp}
+                    onChange={(e) => setAutoAimSettings((prev) => ({ ...prev, kp: parseFloat(e.target.value) }))}
+                    className="w-full h-2 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] uppercase tracking-wider text-gray-400">Max Step (°): {autoAimSettings.maxStep.toFixed(2)}</label>
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="6"
+                    step="0.1"
+                    value={autoAimSettings.maxStep}
+                    onChange={(e) => setAutoAimSettings((prev) => ({ ...prev, maxStep: parseFloat(e.target.value) }))}
+                    className="w-full h-2 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] uppercase tracking-wider text-gray-400">Min Step (°): {autoAimSettings.minStep.toFixed(2)}</label>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={autoAimSettings.minStep}
+                    onChange={(e) => setAutoAimSettings((prev) => ({ ...prev, minStep: parseFloat(e.target.value) }))}
+                    className="w-full h-2 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] uppercase tracking-wider text-gray-400">Deadzone (°): {autoAimSettings.deadzone.toFixed(2)}</label>
+                  <input
+                    type="range"
+                    min="0.1"
+                    max="2.0"
+                    step="0.1"
+                    value={autoAimSettings.deadzone}
+                    onChange={(e) => setAutoAimSettings((prev) => ({ ...prev, deadzone: parseFloat(e.target.value) }))}
+                    className="w-full h-2 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] uppercase tracking-wider text-gray-400">Command Interval (ms): {autoAimSettings.intervalMs}</label>
+                  <input
+                    type="range"
+                    min="50"
+                    max="400"
+                    step="10"
+                    value={autoAimSettings.intervalMs}
+                    onChange={(e) => setAutoAimSettings((prev) => ({ ...prev, intervalMs: parseInt(e.target.value, 10) }))}
+                    className="w-full h-2 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] uppercase tracking-wider text-gray-400">Smoothing (higher = snappier): {autoAimSettings.smoothing.toFixed(2)}</label>
+                  <input
+                    type="range"
+                    min="0.05"
+                    max="0.9"
+                    step="0.05"
+                    value={autoAimSettings.smoothing}
+                    onChange={(e) => setAutoAimSettings((prev) => ({ ...prev, smoothing: parseFloat(e.target.value) }))}
+                    className="w-full h-2 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+                  />
+                </div>
+              </div>
             </div>
           )}
         </div>
