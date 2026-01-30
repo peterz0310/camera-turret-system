@@ -31,6 +31,8 @@ const AUTO_AIM_MIN_COMMAND_INTERVAL_MS = 160;
 const AUTO_AIM_DETECTION_STALE_MS = 700;
 const AUTO_AIM_KP = 0.45;
 const AUTO_AIM_ERROR_ALPHA = 0.35;
+const AUTO_AIM_USE_ABSOLUTE = true;
+const AUTO_AIM_REPLAN_ERROR_DEG = 4.0;
 const AUTO_AIM_YAW_SIGN = 1;
 const AUTO_AIM_PITCH_SIGN = -1;
 
@@ -74,7 +76,9 @@ function App() {
     minStep: AUTO_AIM_MIN_STEP_DEG,
     deadzone: AUTO_AIM_DEADZONE_DEG,
     intervalMs: AUTO_AIM_MIN_COMMAND_INTERVAL_MS,
-    smoothing: AUTO_AIM_ERROR_ALPHA
+    smoothing: AUTO_AIM_ERROR_ALPHA,
+    useAbsolute: AUTO_AIM_USE_ABSOLUTE,
+    replanErrorDeg: AUTO_AIM_REPLAN_ERROR_DEG
   });
   
   // Angular motion state
@@ -98,7 +102,9 @@ function App() {
     minStep: AUTO_AIM_MIN_STEP_DEG,
     deadzone: AUTO_AIM_DEADZONE_DEG,
     intervalMs: AUTO_AIM_MIN_COMMAND_INTERVAL_MS,
-    smoothing: AUTO_AIM_ERROR_ALPHA
+    smoothing: AUTO_AIM_ERROR_ALPHA,
+    useAbsolute: AUTO_AIM_USE_ABSOLUTE,
+    replanErrorDeg: AUTO_AIM_REPLAN_ERROR_DEG
   });
   const aiModeRef = useRef(false);
   const currentModelRef = useRef('mobilenet');
@@ -583,7 +589,9 @@ function App() {
               minStep,
               deadzone,
               intervalMs,
-              smoothing
+              smoothing,
+              useAbsolute,
+              replanErrorDeg
             } = autoAimSettingsRef.current;
 
             const filterReset =
@@ -626,15 +634,44 @@ function App() {
                 if (pitchCommand > 0 && tiltUp) pitchCommand = 0;
                 if (pitchCommand < 0 && tiltDown) pitchCommand = 0;
 
-                if ((Math.abs(yawCommand) >= minStep || Math.abs(pitchCommand) >= minStep) && autoAimEnabledRef.current) {
+                const hasCommand = Math.abs(yawCommand) >= minStep || Math.abs(pitchCommand) >= minStep;
+                if (!hasCommand || !autoAimEnabledRef.current) {
+                  return;
+                }
+
+                const angularInProgress = statusRef.current?.movement?.angularInProgress;
+                if (useAbsolute) {
+                  const maxError = Math.max(Math.abs(yawCommand), Math.abs(pitchCommand));
+                  if (angularInProgress && maxError < replanErrorDeg) {
+                    return;
+                  }
+
+                  const currentAngles = statusRef.current?.angles;
+                  const currentYaw = currentAngles?.horizontal ?? 0;
+                  const currentPitch = currentAngles?.vertical ?? 0;
+                  let targetYaw = currentYaw + yawCommand;
+                  let targetPitch = currentPitch + pitchCommand;
+
+                  if (tiltUp && targetPitch > currentPitch) targetPitch = currentPitch;
+                  if (tiltDown && targetPitch < currentPitch) targetPitch = currentPitch;
+
                   autoAimLastCommandRef.current = nowCommandMs;
                   sendCommand({
-                    moveByAngle: {
-                      horizontal: yawCommand,
-                      vertical: pitchCommand
+                    moveToAngle: {
+                      horizontal: targetYaw,
+                      vertical: targetPitch
                     }
                   });
+                  return;
                 }
+
+                autoAimLastCommandRef.current = nowCommandMs;
+                sendCommand({
+                  moveByAngle: {
+                    horizontal: yawCommand,
+                    vertical: pitchCommand
+                  }
+                });
               }
             }
           }
@@ -854,12 +891,28 @@ function App() {
                         minStep: AUTO_AIM_MIN_STEP_DEG,
                         deadzone: AUTO_AIM_DEADZONE_DEG,
                         intervalMs: AUTO_AIM_MIN_COMMAND_INTERVAL_MS,
-                        smoothing: AUTO_AIM_ERROR_ALPHA
+                        smoothing: AUTO_AIM_ERROR_ALPHA,
+                        useAbsolute: AUTO_AIM_USE_ABSOLUTE,
+                        replanErrorDeg: AUTO_AIM_REPLAN_ERROR_DEG
                       })
                     }
                     className="px-2 py-1 border border-gray-600 hover:border-cyan-400 text-gray-300 hover:text-cyan-300 rounded transition-colors text-[10px]"
                   >
                     RESET
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between p-2 bg-gray-800/50 rounded border border-gray-600">
+                  <span className="text-[10px] uppercase tracking-wider text-gray-300">Control Mode</span>
+                  <button
+                    onClick={() => setAutoAimSettings((prev) => ({ ...prev, useAbsolute: !prev.useAbsolute }))}
+                    className={`px-3 py-1 rounded text-[10px] font-mono transition-colors ${
+                      autoAimSettings.useAbsolute
+                        ? 'bg-cyan-600 text-white hover:bg-cyan-700'
+                        : 'bg-gray-600 text-gray-200 hover:bg-gray-500'
+                    }`}
+                  >
+                    {autoAimSettings.useAbsolute ? 'SNAP' : 'STEP'}
                   </button>
                 </div>
 
@@ -898,6 +951,19 @@ function App() {
                     step="0.05"
                     value={autoAimSettings.minStep}
                     onChange={(e) => setAutoAimSettings((prev) => ({ ...prev, minStep: parseFloat(e.target.value) }))}
+                    className="w-full h-2 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] uppercase tracking-wider text-gray-400">Replan Threshold (°): {autoAimSettings.replanErrorDeg.toFixed(1)}</label>
+                  <input
+                    type="range"
+                    min="0"
+                    max="10"
+                    step="0.5"
+                    value={autoAimSettings.replanErrorDeg}
+                    onChange={(e) => setAutoAimSettings((prev) => ({ ...prev, replanErrorDeg: parseFloat(e.target.value) }))}
                     className="w-full h-2 rounded-lg appearance-none cursor-pointer accent-cyan-400"
                   />
                 </div>
