@@ -53,7 +53,7 @@ const unsigned long CONTROL_HARD_TIMEOUT_MS = 3000; // Hard timeout: stop even i
 
 // Angular motion settings
 const float HORIZONTAL_GEAR_RATIO = 4.0;  // 4:1 gear ratio for yaw
-const float VERTICAL_GEAR_RATIO = 2.25;   // 2.25:1 gear ratio for tilt
+const float VERTICAL_GEAR_RATIO = 3.0;    // 2.25:1 gear ratio for tilt
 const float STEPS_PER_REVOLUTION = 200.0; // Standard stepper motor (1.8° per step)
 const float DEGREES_PER_REVOLUTION = 360.0;
 
@@ -488,13 +488,15 @@ bool calibrateVerticalMotor()
   bool upFound = false;
   unsigned long startTime = millis();
 
-  // If we're already at a limit (likely leaning), move gently off that switch first
+  // Set calibration speed - moderate pace, not too slow
+  verticalStepper.setMaxSpeed(verticalMaxStepsPerSec * verticalCalibrationSpeedFactor);
+
+  // If already at down limit, gently move up to clear it
   if (isDownLimitActive())
   {
-    Serial.println("Down limit active at start, nudging up to clear...");
-    verticalStepper.setMaxSpeed(verticalMaxStepsPerSec * verticalClearSpeedFactor);
+    Serial.println("Down limit active at start, clearing...");
     long clearStart = verticalStepper.currentPosition();
-    verticalStepper.moveTo(clearStart + maxVerticalSearchSteps);
+    verticalStepper.moveTo(clearStart + (long)(VERTICAL_STEPS_PER_DEGREE * 10));
     while (isDownLimitActive() && labs(verticalStepper.currentPosition() - clearStart) < maxVerticalSearchSteps)
     {
       verticalStepper.run();
@@ -507,15 +509,15 @@ bool calibrateVerticalMotor()
       delay(1);
     }
     verticalStepper.stop();
-    delay(100);
+    delay(50);
   }
 
+  // If already at up limit, gently move down to clear it
   if (isUpLimitActive())
   {
-    Serial.println("Up limit active at start, nudging down to clear...");
-    verticalStepper.setMaxSpeed(verticalMaxStepsPerSec * verticalClearSpeedFactor);
+    Serial.println("Up limit active at start, clearing...");
     long clearStart = verticalStepper.currentPosition();
-    verticalStepper.moveTo(clearStart - maxVerticalSearchSteps);
+    verticalStepper.moveTo(clearStart - (long)(VERTICAL_STEPS_PER_DEGREE * 10));
     while (isUpLimitActive() && labs(verticalStepper.currentPosition() - clearStart) < maxVerticalSearchSteps)
     {
       verticalStepper.run();
@@ -528,178 +530,68 @@ bool calibrateVerticalMotor()
       delay(1);
     }
     verticalStepper.stop();
-    delay(100);
+    delay(50);
   }
 
-  // Move down until limit switch is hit (latched to avoid bounce)
-  Serial.println("Moving to down limit...");
-  verticalStepper.setMaxSpeed(verticalMaxStepsPerSec * verticalCalibrationSpeedFactor);
+  // Move down to find the down limit - stop when switch activates
+  Serial.println("Finding down limit...");
   long downSearchStart = verticalStepper.currentPosition();
   verticalStepper.moveTo(downSearchStart - maxVerticalSearchSteps);
-  bool downLatched = false;
-  while (!downLatched && labs(verticalStepper.currentPosition() - downSearchStart) < maxVerticalSearchSteps)
+  while (labs(verticalStepper.currentPosition() - downSearchStart) < maxVerticalSearchSteps)
   {
     if (isDownLimitActive())
     {
-      downLatched = true;
+      downFound = true;
+      verticalStepper.stop();
+      downLimitPosition = verticalStepper.currentPosition();
+      Serial.printf("Down limit found at position: %ld\n", downLimitPosition);
       break;
     }
     verticalStepper.run();
     if (millis() - startTime > CALIBRATION_TIMEOUT_MS)
     {
-      Serial.println("Timeout while searching for down limit");
+      Serial.println("Timeout searching for down limit");
       verticalStepper.stop();
       break;
     }
     delay(1);
   }
   verticalStepper.stop();
-  downFound = downLatched;
+  delay(50);
 
-  if (downFound)
-  {
-    const long downBackoffSteps = 180;
-    const long downReapproachSteps = 360;
-
-    Serial.println("Down limit latched - backing off and reapproaching slowly");
-    verticalStepper.setMaxSpeed(verticalMaxStepsPerSec * verticalClearSpeedFactor);
-
-    // Back off to clear the switch
-    verticalStepper.move(downBackoffSteps);
-    while (verticalStepper.distanceToGo() != 0)
-    {
-      verticalStepper.run();
-      if (millis() - startTime > CALIBRATION_TIMEOUT_MS)
-      {
-        Serial.println("Timeout while backing off down limit");
-        verticalStepper.stop();
-        break;
-      }
-      delay(1);
-    }
-
-    // Re-approach slowly for a clean latch
-    long downReapproachStart = verticalStepper.currentPosition();
-    verticalStepper.moveTo(downReapproachStart - downReapproachSteps);
-    bool downReLatched = false;
-    while (!downReLatched && labs(verticalStepper.currentPosition() - downReapproachStart) < downReapproachSteps)
-    {
-      if (isDownLimitActive())
-      {
-        downReLatched = true;
-        break;
-      }
-      verticalStepper.run();
-      if (millis() - startTime > CALIBRATION_TIMEOUT_MS)
-      {
-        Serial.println("Timeout while re-approaching down limit");
-        verticalStepper.stop();
-        break;
-      }
-      delay(1);
-    }
-
-    downLimitPosition = verticalStepper.currentPosition();
-    verticalStepper.stop();
-    downFound = downLatched && downReLatched;
-    Serial.printf("Down limit found at position: %ld\n", downLimitPosition);
-  }
-  else
+  if (!downFound)
   {
     downLimitPosition = verticalStepper.currentPosition();
     Serial.printf("Down limit not found (last position: %ld)\n", downLimitPosition);
   }
 
-  // If we're already at up limit, move away first
-  if (isUpLimitActive())
-  {
-    Serial.println("Already at up limit, moving away...");
-    verticalStepper.setMaxSpeed(verticalMaxStepsPerSec * verticalClearSpeedFactor);
-    long clearStart = verticalStepper.currentPosition();
-    verticalStepper.moveTo(clearStart - maxVerticalSearchSteps);
-    while (isUpLimitActive() && labs(verticalStepper.currentPosition() - clearStart) < maxVerticalSearchSteps)
-    {
-      verticalStepper.run();
-      delay(1);
-    }
-    verticalStepper.stop();
-    delay(100);
-  }
-
-  // Move up until limit switch is hit (latched to avoid bounce)
-  Serial.println("Moving to up limit...");
-  verticalStepper.setMaxSpeed(verticalMaxStepsPerSec * verticalCalibrationSpeedFactor);
+  // Move up to find the up limit - stop when switch activates
+  Serial.println("Finding up limit...");
   long upSearchStart = verticalStepper.currentPosition();
   verticalStepper.moveTo(upSearchStart + maxVerticalSearchSteps);
-  bool upLatched = false;
-  while (!upLatched && labs(verticalStepper.currentPosition() - upSearchStart) < maxVerticalSearchSteps)
+  while (labs(verticalStepper.currentPosition() - upSearchStart) < maxVerticalSearchSteps)
   {
     if (isUpLimitActive())
     {
-      upLatched = true;
+      upFound = true;
+      verticalStepper.stop();
+      upLimitPosition = verticalStepper.currentPosition();
+      Serial.printf("Up limit found at position: %ld\n", upLimitPosition);
       break;
     }
     verticalStepper.run();
     if (millis() - startTime > CALIBRATION_TIMEOUT_MS)
     {
-      Serial.println("Timeout while searching for up limit");
+      Serial.println("Timeout searching for up limit");
       verticalStepper.stop();
       break;
     }
     delay(1);
   }
   verticalStepper.stop();
-  upFound = upLatched;
+  delay(50);
 
-  if (upFound)
-  {
-    const long upBackoffSteps = 180;
-    const long upReapproachSteps = 360;
-
-    Serial.println("Up limit latched - backing off and reapproaching slowly");
-    verticalStepper.setMaxSpeed(verticalMaxStepsPerSec * verticalClearSpeedFactor);
-
-    // Back off to clear the switch
-    verticalStepper.move(-upBackoffSteps);
-    while (verticalStepper.distanceToGo() != 0)
-    {
-      verticalStepper.run();
-      if (millis() - startTime > CALIBRATION_TIMEOUT_MS)
-      {
-        Serial.println("Timeout while backing off up limit");
-        verticalStepper.stop();
-        break;
-      }
-      delay(1);
-    }
-
-    // Re-approach slowly for a clean latch
-    long upReapproachStart = verticalStepper.currentPosition();
-    verticalStepper.moveTo(upReapproachStart + upReapproachSteps);
-    bool upReLatched = false;
-    while (!upReLatched && labs(verticalStepper.currentPosition() - upReapproachStart) < upReapproachSteps)
-    {
-      if (isUpLimitActive())
-      {
-        upReLatched = true;
-        break;
-      }
-      verticalStepper.run();
-      if (millis() - startTime > CALIBRATION_TIMEOUT_MS)
-      {
-        Serial.println("Timeout while re-approaching up limit");
-        verticalStepper.stop();
-        break;
-      }
-      delay(1);
-    }
-
-    upLimitPosition = verticalStepper.currentPosition();
-    verticalStepper.stop();
-    upFound = upLatched && upReLatched;
-    Serial.printf("Up limit found at position: %ld\n", upLimitPosition);
-  }
-  else
+  if (!upFound)
   {
     upLimitPosition = verticalStepper.currentPosition();
     Serial.printf("Up limit not found (last position: %ld)\n", upLimitPosition);

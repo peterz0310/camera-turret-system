@@ -423,28 +423,7 @@ function App() {
     }
   };
 
-  const ensureAiEnabledWithModel = async (modelName) => {
-    try {
-      const response = await fetch(`${API_URL}/ai`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: true, model: modelName })
-      });
-      const data = await response.json();
-      if (response.ok && data.success) {
-        setAiMode(data.ai_enabled);
-        setCurrentModel(data.current_model);
-        return { ok: true, data };
-      }
-      console.error('❌ [AI] Failed to enable AI with model:', data.message || response.status);
-      return { ok: false, data };
-    } catch (error) {
-      console.error('❌ [AI] Network error enabling AI with model:', error);
-      return { ok: false, error };
-    }
-  };
-
-  const handleAutoAimToggle = async () => {
+  const handleAutoAimToggle = () => {
     if (!connectedRef.current) {
       console.error('❌ [AUTO-AIM] Cannot enable: WebSocket not connected');
       return;
@@ -456,17 +435,13 @@ function App() {
       return;
     }
 
-    const mobilenetAvailable = !!availableModels?.mobilenet;
-    const targetModel = mobilenetAvailable ? 'mobilenet' : currentModelRef.current;
-    const result = await ensureAiEnabledWithModel(targetModel);
-    if (!result.ok) {
-      setAutoAimEnabled(false);
+    if (!aiModeRef.current) {
+      console.warn("⚠️ [AUTO-AIM] AI detection is disabled. Enable AI Detection first.");
       return;
     }
 
-    if (result.data.current_model !== 'mobilenet') {
-      console.warn("⚠️ [AUTO-AIM] MobileNet not available, auto-aim will remain off");
-      setAutoAimEnabled(false);
+    if (currentModelRef.current !== 'mobilenet') {
+      console.warn("⚠️ [AUTO-AIM] MobileNet model required for auto-aim.");
       return;
     }
 
@@ -670,6 +645,14 @@ function App() {
   // Calculate time since last fire for visual feedback
   const timeSinceLastFire = Date.now() - lastFireTime;
   const recentlyFired = timeSinceLastFire < 3000; // Show feedback for 3 seconds
+  const autoAimBlockedReason = !connected
+    ? 'Link required'
+    : !aiMode
+      ? 'Enable AI detection'
+      : currentModel !== 'mobilenet'
+        ? 'MobileNet only'
+        : null;
+  const autoAimButtonDisabled = !connected || (!autoAimEnabled && !!autoAimBlockedReason);
 
 
   return (
@@ -754,6 +737,32 @@ function App() {
           onStepSizeChange={handleStepSizeChange}
         />
 
+        {/* Auto Aim Controls */}
+        <div className="relative pointer-events-auto">
+          <button
+            onClick={handleAutoAimToggle}
+            disabled={autoAimButtonDisabled}
+            className={`${controlButtonClass} justify-between w-full ${
+              autoAimEnabled
+                ? 'border-cyan-400/60 text-cyan-300 hover:bg-cyan-400/20 hover:text-cyan-200'
+                : 'hover:border-cyan-400/40 hover:text-cyan-200'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <Target className="w-5 h-5" />
+              <span>Auto Aim</span>
+            </div>
+            <span className="text-[10px] uppercase tracking-wider">
+              {autoAimEnabled ? 'Engaged' : 'Standby'}
+            </span>
+          </button>
+          {!autoAimEnabled && autoAimBlockedReason && (
+            <div className="mt-1 text-[10px] uppercase tracking-wider text-gray-400">
+              {autoAimBlockedReason}
+            </div>
+          )}
+        </div>
+
         {/* AI Detection Controls - Combined Menu */}
         <div className="relative pointer-events-auto" ref={aiPanelRef}>
           <button
@@ -784,25 +793,6 @@ function App() {
                     }`}
                   >
                     {aiMode ? 'ENABLED' : 'DISABLED'}
-                  </button>
-                </div>
-
-                {/* Auto Aim Toggle */}
-                <div className="flex items-center justify-between p-3 bg-gray-800/50 rounded border border-gray-600">
-                  <div className="flex flex-col">
-                    <span className="text-sm font-mono">Auto Aim</span>
-                    <span className="text-[10px] uppercase tracking-wider text-gray-400">Center bbox • MobileNet only</span>
-                  </div>
-                  <button
-                    onClick={handleAutoAimToggle}
-                    disabled={!connected}
-                    className={`px-3 py-1 rounded text-xs font-mono transition-colors ${
-                      autoAimEnabled
-                        ? 'bg-cyan-600 text-white hover:bg-cyan-700'
-                        : 'bg-gray-600 text-gray-300 hover:bg-gray-500'
-                    }`}
-                  >
-                    {autoAimEnabled ? 'ENABLED' : 'DISABLED'}
                   </button>
                 </div>
 
