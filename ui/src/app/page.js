@@ -24,13 +24,15 @@ const CAMERA_STREAM_URL = `${CAMERA_STREAM_BASE_URL}/stream`;
 const API_URL = `${CAMERA_STREAM_BASE_URL}/api`;
 const ANGULAR_STEP_OPTIONS = [1, 5, 10, 15, 30, 45];
 const AUTO_AIM_HFOV_DEG = 65;
-const AUTO_AIM_DEADZONE_DEG = 0.5;
+const AUTO_AIM_DEADZONE_DEG = 0.8;
 const AUTO_AIM_MAX_STEP_DEG = 2.0;
-const AUTO_AIM_MIN_COMMAND_INTERVAL_MS = 120;
+const AUTO_AIM_MIN_STEP_DEG = 0.2;
+const AUTO_AIM_MIN_COMMAND_INTERVAL_MS = 160;
 const AUTO_AIM_DETECTION_STALE_MS = 700;
 const AUTO_AIM_KP = 0.45;
+const AUTO_AIM_ERROR_ALPHA = 0.35;
 const AUTO_AIM_YAW_SIGN = 1;
-const AUTO_AIM_PITCH_SIGN = 1;
+const AUTO_AIM_PITCH_SIGN = -1;
 
 
 function App() {
@@ -77,6 +79,10 @@ function App() {
   const autoAimInFlightRef = useRef(false);
   const autoAimLastCommandRef = useRef(0);
   const autoAimEnabledRef = useRef(false);
+  const autoAimYawErrorRef = useRef(0);
+  const autoAimPitchErrorRef = useRef(0);
+  const autoAimHasErrorRef = useRef(false);
+  const autoAimLastDetectionRef = useRef(0);
   const aiModeRef = useRef(false);
   const currentModelRef = useRef('mobilenet');
   const statusRef = useRef(null);
@@ -254,6 +260,10 @@ function App() {
     autoAimEnabledRef.current = false;
     autoAimInFlightRef.current = false;
     autoAimLastCommandRef.current = 0;
+    autoAimYawErrorRef.current = 0;
+    autoAimPitchErrorRef.current = 0;
+    autoAimHasErrorRef.current = false;
+    autoAimLastDetectionRef.current = 0;
     setAutoAimEnabled(false);
     if (reason) {
       console.log(`🎯 [AUTO-AIM] Disabled due to ${reason}`);
@@ -546,25 +556,52 @@ function App() {
             const fy = frameH / (2 * Math.tan(vfovRad / 2));
             const yawErrorDeg = (Math.atan(dx / fx) * 180) / Math.PI;
             const pitchErrorDeg = (Math.atan(dy / fy) * 180) / Math.PI;
+            const filterReset =
+              !autoAimHasErrorRef.current ||
+              (nowMs - autoAimLastDetectionRef.current) > AUTO_AIM_DETECTION_STALE_MS;
+            if (filterReset) {
+              autoAimYawErrorRef.current = yawErrorDeg;
+              autoAimPitchErrorRef.current = pitchErrorDeg;
+            } else {
+              autoAimYawErrorRef.current =
+                autoAimYawErrorRef.current + (yawErrorDeg - autoAimYawErrorRef.current) * AUTO_AIM_ERROR_ALPHA;
+              autoAimPitchErrorRef.current =
+                autoAimPitchErrorRef.current + (pitchErrorDeg - autoAimPitchErrorRef.current) * AUTO_AIM_ERROR_ALPHA;
+            }
+            autoAimHasErrorRef.current = true;
+            autoAimLastDetectionRef.current = nowMs;
 
-            if (Math.abs(yawErrorDeg) >= AUTO_AIM_DEADZONE_DEG || Math.abs(pitchErrorDeg) >= AUTO_AIM_DEADZONE_DEG) {
+            const filteredYawError = autoAimYawErrorRef.current;
+            const filteredPitchError = autoAimPitchErrorRef.current;
+
+            if (Math.abs(filteredYawError) >= AUTO_AIM_DEADZONE_DEG || Math.abs(filteredPitchError) >= AUTO_AIM_DEADZONE_DEG) {
               const nowCommandMs = Date.now();
               if (nowCommandMs - autoAimLastCommandRef.current >= AUTO_AIM_MIN_COMMAND_INTERVAL_MS) {
                 const yawStep = Math.max(
                   -AUTO_AIM_MAX_STEP_DEG,
-                  Math.min(AUTO_AIM_MAX_STEP_DEG, yawErrorDeg * AUTO_AIM_KP)
+                  Math.min(AUTO_AIM_MAX_STEP_DEG, filteredYawError * AUTO_AIM_KP)
                 );
                 const pitchStep = Math.max(
                   -AUTO_AIM_MAX_STEP_DEG,
-                  Math.min(AUTO_AIM_MAX_STEP_DEG, pitchErrorDeg * AUTO_AIM_KP)
+                  Math.min(AUTO_AIM_MAX_STEP_DEG, filteredPitchError * AUTO_AIM_KP)
                 );
 
-                if ((Math.abs(yawStep) >= 0.05 || Math.abs(pitchStep) >= 0.05) && autoAimEnabledRef.current) {
+                const clampMinStep = (value) => (Math.abs(value) < AUTO_AIM_MIN_STEP_DEG ? 0 : value);
+                let yawCommand = clampMinStep(yawStep) * AUTO_AIM_YAW_SIGN;
+                let pitchCommand = clampMinStep(pitchStep) * AUTO_AIM_PITCH_SIGN;
+
+                // Respect tilt limit switches to avoid blocking yaw when pitch is at a stop.
+                const tiltUp = statusRef.current?.sensors?.tiltUp;
+                const tiltDown = statusRef.current?.sensors?.tiltDown;
+                if (pitchCommand > 0 && tiltUp) pitchCommand = 0;
+                if (pitchCommand < 0 && tiltDown) pitchCommand = 0;
+
+                if ((Math.abs(yawCommand) >= AUTO_AIM_MIN_STEP_DEG || Math.abs(pitchCommand) >= AUTO_AIM_MIN_STEP_DEG) && autoAimEnabledRef.current) {
                   autoAimLastCommandRef.current = nowCommandMs;
                   sendCommand({
                     moveByAngle: {
-                      horizontal: yawStep * AUTO_AIM_YAW_SIGN,
-                      vertical: pitchStep * AUTO_AIM_PITCH_SIGN
+                      horizontal: yawCommand,
+                      vertical: pitchCommand
                     }
                   });
                 }
