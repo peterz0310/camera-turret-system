@@ -33,6 +33,8 @@ const AUTO_AIM_KP = 0.45;
 const AUTO_AIM_ERROR_ALPHA = 0.35;
 const AUTO_AIM_USE_ABSOLUTE = true;
 const AUTO_AIM_REPLAN_ERROR_DEG = 4.0;
+const AUTO_AIM_SNAP_GAIN = 1.0;
+const AUTO_AIM_SNAP_MAX_DEG = 25.0;
 const AUTO_AIM_YAW_SIGN = 1;
 const AUTO_AIM_PITCH_SIGN = -1;
 
@@ -78,7 +80,9 @@ function App() {
     intervalMs: AUTO_AIM_MIN_COMMAND_INTERVAL_MS,
     smoothing: AUTO_AIM_ERROR_ALPHA,
     useAbsolute: AUTO_AIM_USE_ABSOLUTE,
-    replanErrorDeg: AUTO_AIM_REPLAN_ERROR_DEG
+    replanErrorDeg: AUTO_AIM_REPLAN_ERROR_DEG,
+    snapGain: AUTO_AIM_SNAP_GAIN,
+    snapMaxDeg: AUTO_AIM_SNAP_MAX_DEG
   });
   
   // Angular motion state
@@ -104,7 +108,9 @@ function App() {
     intervalMs: AUTO_AIM_MIN_COMMAND_INTERVAL_MS,
     smoothing: AUTO_AIM_ERROR_ALPHA,
     useAbsolute: AUTO_AIM_USE_ABSOLUTE,
-    replanErrorDeg: AUTO_AIM_REPLAN_ERROR_DEG
+    replanErrorDeg: AUTO_AIM_REPLAN_ERROR_DEG,
+    snapGain: AUTO_AIM_SNAP_GAIN,
+    snapMaxDeg: AUTO_AIM_SNAP_MAX_DEG
   });
   const aiModeRef = useRef(false);
   const currentModelRef = useRef('mobilenet');
@@ -591,7 +597,9 @@ function App() {
               intervalMs,
               smoothing,
               useAbsolute,
-              replanErrorDeg
+              replanErrorDeg,
+              snapGain,
+              snapMaxDeg
             } = autoAimSettingsRef.current;
 
             const filterReset =
@@ -641,7 +649,7 @@ function App() {
 
                 const angularInProgress = statusRef.current?.movement?.angularInProgress;
                 if (useAbsolute) {
-                  const maxError = Math.max(Math.abs(yawCommand), Math.abs(pitchCommand));
+                  const maxError = Math.max(Math.abs(filteredYawError), Math.abs(filteredPitchError));
                   if (angularInProgress && maxError < replanErrorDeg) {
                     return;
                   }
@@ -649,8 +657,16 @@ function App() {
                   const currentAngles = statusRef.current?.angles;
                   const currentYaw = currentAngles?.horizontal ?? 0;
                   const currentPitch = currentAngles?.vertical ?? 0;
-                  let targetYaw = currentYaw + yawCommand;
-                  let targetPitch = currentPitch + pitchCommand;
+                  let snapYaw = filteredYawError * snapGain;
+                  let snapPitch = filteredPitchError * snapGain;
+                  snapYaw = Math.max(-snapMaxDeg, Math.min(snapMaxDeg, snapYaw));
+                  snapPitch = Math.max(-snapMaxDeg, Math.min(snapMaxDeg, snapPitch));
+
+                  const snapYawCommand = clampMinStep(snapYaw) * AUTO_AIM_YAW_SIGN;
+                  const snapPitchCommand = clampMinStep(snapPitch) * AUTO_AIM_PITCH_SIGN;
+
+                  let targetYaw = currentYaw + snapYawCommand;
+                  let targetPitch = currentPitch + snapPitchCommand;
 
                   if (tiltUp && targetPitch > currentPitch) targetPitch = currentPitch;
                   if (tiltDown && targetPitch < currentPitch) targetPitch = currentPitch;
@@ -893,7 +909,9 @@ function App() {
                         intervalMs: AUTO_AIM_MIN_COMMAND_INTERVAL_MS,
                         smoothing: AUTO_AIM_ERROR_ALPHA,
                         useAbsolute: AUTO_AIM_USE_ABSOLUTE,
-                        replanErrorDeg: AUTO_AIM_REPLAN_ERROR_DEG
+                        replanErrorDeg: AUTO_AIM_REPLAN_ERROR_DEG,
+                        snapGain: AUTO_AIM_SNAP_GAIN,
+                        snapMaxDeg: AUTO_AIM_SNAP_MAX_DEG
                       })
                     }
                     className="px-2 py-1 border border-gray-600 hover:border-cyan-400 text-gray-300 hover:text-cyan-300 rounded transition-colors text-[10px]"
@@ -954,6 +972,36 @@ function App() {
                     className="w-full h-2 rounded-lg appearance-none cursor-pointer accent-cyan-400"
                   />
                 </div>
+
+                {autoAimSettings.useAbsolute && (
+                  <>
+                    <div className="space-y-2">
+                      <label className="text-[10px] uppercase tracking-wider text-gray-400">Snap Gain: {autoAimSettings.snapGain.toFixed(2)}</label>
+                      <input
+                        type="range"
+                        min="0.5"
+                        max="1.5"
+                        step="0.05"
+                        value={autoAimSettings.snapGain}
+                        onChange={(e) => setAutoAimSettings((prev) => ({ ...prev, snapGain: parseFloat(e.target.value) }))}
+                        className="w-full h-2 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-[10px] uppercase tracking-wider text-gray-400">Snap Max (°): {autoAimSettings.snapMaxDeg.toFixed(1)}</label>
+                      <input
+                        type="range"
+                        min="5"
+                        max="60"
+                        step="1"
+                        value={autoAimSettings.snapMaxDeg}
+                        onChange={(e) => setAutoAimSettings((prev) => ({ ...prev, snapMaxDeg: parseFloat(e.target.value) }))}
+                        className="w-full h-2 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+                      />
+                    </div>
+                  </>
+                )}
 
                 <div className="space-y-2">
                   <label className="text-[10px] uppercase tracking-wider text-gray-400">Replan Threshold (°): {autoAimSettings.replanErrorDeg.toFixed(1)}</label>
