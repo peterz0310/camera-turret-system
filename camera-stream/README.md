@@ -39,7 +39,7 @@ Detections are computed asynchronously at a configurable FPS and drawn into the 
 - **Stream Rate**: Full camera framerate; detections are overlaid as they arrive
 - **Model**: MobileNet-SSD v2 via TensorFlow Hub (downloads on first run)
 - **Classes**: Person detection only
-- **Confidence**: 50% threshold
+- **Confidence**: 70% threshold
 - **Description**: Fast inference, good balance of speed and accuracy
 
 ### Alternative Model: YOLOv8n
@@ -47,7 +47,7 @@ Detections are computed asynchronously at a configurable FPS and drawn into the 
 - **Detection Rate**: 4 FPS default (configurable per model)
 - **Model**: YOLOv8n (nano) via ultralytics (weights download on first run)
 - **Classes**: Person detection only
-- **Confidence**: 50% threshold
+- **Confidence**: 70% threshold
 
 ## Usage Examples
 

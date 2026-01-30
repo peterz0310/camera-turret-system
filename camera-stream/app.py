@@ -305,7 +305,7 @@ class AIStreamProcessor:
                 if int(box.cls[0]) == 0:  # Person class
                     x1, y1, x2, y2 = box.xyxy[0].tolist()
                     confidence = float(box.conf[0])
-                    if confidence > 0.5:
+                    if confidence > 0.7:
                         detections.append({
                             'bbox': [int(x1), int(y1), int(x2), int(y2)],
                             'confidence': confidence,
@@ -326,7 +326,7 @@ class AIStreamProcessor:
             
             for i in range(len(detection_scores)):
                 # Class 1 is person in COCO dataset
-                if detection_classes[i] == 1 and detection_scores[i] > 0.5:
+                if detection_classes[i] == 1 and detection_scores[i] > 0.7:
                     box = detection_boxes[i]
                     y1, x1, y2, x2 = box
                     

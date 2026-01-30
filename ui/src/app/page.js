@@ -35,6 +35,10 @@ const AUTO_AIM_USE_ABSOLUTE = true;
 const AUTO_AIM_REPLAN_ERROR_DEG = 1.2; // Only replan if error grows beyond this
 const AUTO_AIM_SNAP_GAIN = 0.85; // Slight undershoot prevents oscillation
 const AUTO_AIM_SNAP_MAX_DEG = 25.0;
+const AUTO_AIM_HEAD_ANCHOR_RATIO = 0.25;
+const AUTO_AIM_TALL_BOX_RATIO = 0.6;
+const AUTO_AIM_TOP_CLIP_MARGIN_RATIO = 0.04;
+const AUTO_AIM_TOP_CLIP_BIAS_GAIN = 0.8;
 const AUTO_AIM_YAW_SIGN = 1;
 const AUTO_AIM_PITCH_SIGN = -1;
 
@@ -475,12 +479,6 @@ function App() {
         setCurrentModel(data.current_model);
         setAiMode(data.ai_enabled);
         setAiPanelOpen(false);
-        if (autoAimEnabledRef.current && data.current_model !== "mobilenet") {
-          setAutoAimEnabled(false);
-          console.log(
-            "🎯 [AUTO-AIM] Disabled because model switched away from MobileNet",
-          );
-        }
         console.log(`✅ [AI] Successfully switched to: ${data.current_model}`);
       } else {
         console.error(
@@ -544,18 +542,13 @@ function App() {
       return;
     }
 
-    if (currentModelRef.current !== "mobilenet") {
-      console.warn("⚠️ [AUTO-AIM] MobileNet model required for auto-aim.");
-      return;
-    }
-
     autoAimEnabledRef.current = true;
     setAutoAimEnabled(true);
     console.log("🎯 [AUTO-AIM] Enabled");
   };
 
   useEffect(() => {
-    if (autoAimEnabled && (!aiMode || currentModel !== "mobilenet")) {
+    if (autoAimEnabled && !aiMode) {
       disableAutoAim("AI/model change");
     }
   }, [autoAimEnabled, aiMode, currentModel]);
@@ -616,7 +609,7 @@ function App() {
         const detections = Array.isArray(data?.detections)
           ? data.detections
           : [];
-        if (!data?.ai_enabled || data?.current_model !== "mobilenet") {
+        if (!data?.ai_enabled) {
           disableAutoAim("AI unavailable");
           scheduleNext(300);
           return;
@@ -674,7 +667,14 @@ function App() {
 
             // Calculate target center from smoothed bounding box
             const targetX = (x1 + x2) / 2;
-            const targetY = (y1 + y2) / 2;
+            const bboxHeight = Math.max(0, y2 - y1);
+            const tallBox = bboxHeight >= frameH * AUTO_AIM_TALL_BOX_RATIO;
+            const topClipMarginPx = frameH * AUTO_AIM_TOP_CLIP_MARGIN_RATIO;
+            const topClipped = y1 <= topClipMarginPx;
+            const targetY =
+              tallBox || topClipped
+                ? y1 + bboxHeight * AUTO_AIM_HEAD_ANCHOR_RATIO
+                : (y1 + y2) / 2;
 
             const dx = targetX - frameW / 2;
             const dy = targetY - frameH / 2;
@@ -685,7 +685,14 @@ function App() {
             const fx = frameW / (2 * Math.tan(hfovRad / 2));
             const fy = frameH / (2 * Math.tan(vfovRad / 2));
             const yawErrorDeg = (Math.atan(dx / fx) * 180) / Math.PI;
-            const pitchErrorDeg = (Math.atan(dy / fy) * 180) / Math.PI;
+            let pitchErrorDeg = (Math.atan(dy / fy) * 180) / Math.PI;
+            if (topClipped) {
+              const vfovDeg = (vfovRad * 180) / Math.PI;
+              const overshootPx = Math.max(0, topClipMarginPx - y1);
+              const biasDeg =
+                (overshootPx / frameH) * vfovDeg * AUTO_AIM_TOP_CLIP_BIAS_GAIN;
+              pitchErrorDeg -= biasDeg;
+            }
             const {
               kp,
               maxStep,
@@ -926,9 +933,7 @@ function App() {
     ? "Link required"
     : !aiMode
       ? "Enable AI detection"
-      : currentModel !== "mobilenet"
-        ? "MobileNet only"
-        : null;
+      : null;
   const autoAimButtonDisabled =
     !connected || (!autoAimEnabled && !!autoAimBlockedReason);
 
