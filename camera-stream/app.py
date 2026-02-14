@@ -56,11 +56,58 @@ STATIC_FRAME_WIDTH = 640
 STATIC_FRAME_HEIGHT = 480
 STATIC_FRAME_COUNT = 10
 STATIC_FPS = 10 # Target FPS for the fallback animation (lowered for consistency)
+FRAME_STALL_TIMEOUT = 2.5  # Seconds without a decoded frame before falling back
+MAX_STREAM_BUFFER = 1024 * 1024  # Cap buffer growth when parsing MJPEG
+
+STREAM_ROTATE = int(os.getenv("STREAM_ROTATE", "0"))
+STREAM_FORCE_LANDSCAPE = os.getenv("STREAM_FORCE_LANDSCAPE", "false").lower() in ("1", "true", "yes", "on")
+STREAM_OUTPUT_WIDTH = int(os.getenv("STREAM_OUTPUT_WIDTH", "0"))
+STREAM_OUTPUT_HEIGHT = int(os.getenv("STREAM_OUTPUT_HEIGHT", "0"))
+
+_ROTATE_CODE_MAP = {
+    0: None,
+    90: cv2.ROTATE_90_CLOCKWISE,
+    180: cv2.ROTATE_180,
+    270: cv2.ROTATE_90_COUNTERCLOCKWISE,
+}
+if STREAM_ROTATE not in _ROTATE_CODE_MAP:
+    print(f"⚠️ Invalid STREAM_ROTATE={STREAM_ROTATE}; defaulting to 0")
+    STREAM_ROTATE = 0
+STREAM_ROTATE_CODE = _ROTATE_CODE_MAP[STREAM_ROTATE]
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
 STATIC_FRAME_BUFFER = []
+
+
+class StreamUnavailable(Exception):
+    """Raised when the camera stream is unavailable or stalled."""
+
+def apply_stream_transform(img):
+    """Apply optional rotation/crop/resize to keep output orientation predictable."""
+    if STREAM_ROTATE_CODE is not None:
+        img = cv2.rotate(img, STREAM_ROTATE_CODE)
+
+    if STREAM_FORCE_LANDSCAPE and img.shape[0] > img.shape[1]:
+        h, w = img.shape[:2]
+        target_aspect = (
+            (STREAM_OUTPUT_WIDTH / STREAM_OUTPUT_HEIGHT)
+            if STREAM_OUTPUT_WIDTH > 0 and STREAM_OUTPUT_HEIGHT > 0
+            else (16 / 9)
+        )
+        target_h = max(1, int(w / target_aspect))
+        if target_h < h:
+            y0 = (h - target_h) // 2
+            img = img[y0:y0 + target_h, :]
+
+    if STREAM_OUTPUT_WIDTH > 0 and STREAM_OUTPUT_HEIGHT > 0:
+        img = cv2.resize(
+            img,
+            (STREAM_OUTPUT_WIDTH, STREAM_OUTPUT_HEIGHT),
+            interpolation=cv2.INTER_AREA,
+        )
+    return img
 
 # AI Processing Class
 class AIStreamProcessor:
@@ -373,7 +420,14 @@ class AIStreamProcessor:
     
     def process_frame(self, frame_bytes):
         """Process frame in real-time (non-blocking)"""
-        if not self.enabled or self.current_model not in self.models:
+        transform_enabled = (
+            STREAM_ROTATE_CODE is not None
+            or STREAM_FORCE_LANDSCAPE
+            or (STREAM_OUTPUT_WIDTH > 0 and STREAM_OUTPUT_HEIGHT > 0)
+        )
+        ai_enabled = self.enabled and self.current_model in self.models
+
+        if not transform_enabled and not ai_enabled:
             return frame_bytes
             
         try:
@@ -382,15 +436,18 @@ class AIStreamProcessor:
             img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             if img is None:
                 return frame_bytes
+
+            img = apply_stream_transform(img)
             
-            # Queue frame for async AI processing (non-blocking)
-            self.queue_frame_for_processing(img.copy())
-            
-            # Always draw latest detections (even if from previous frames)
-            annotated_img = self.draw_detections(img, self.latest_detections)
+            if ai_enabled:
+                # Queue frame for async AI processing (non-blocking)
+                self.queue_frame_for_processing(img.copy())
+                
+                # Always draw latest detections (even if from previous frames)
+                img = self.draw_detections(img, self.latest_detections)
             
             # Encode and return immediately
-            _, buffer = cv2.imencode('.jpg', annotated_img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            _, buffer = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 85])
             return buffer.tobytes()
             
         except Exception as e:
@@ -536,28 +593,44 @@ def stream_generator():
             print(f"Attempting to connect to camera at {ESP32_CAM_URL}...")
             r = requests.get(ESP32_CAM_URL, stream=True, timeout=REQUEST_TIMEOUT)
             r.raise_for_status()
+            content_type = r.headers.get("Content-Type", "")
+            if content_type and "multipart" not in content_type and "image/jpeg" not in content_type:
+                raise StreamUnavailable(f"Unexpected Content-Type: {content_type}")
             print("✅ Camera stream connected.")
             
-            byte_buffer = b''
-            boundary = b'--frame' 
+            byte_buffer = b""
+            last_frame_time = time.time()
 
             for chunk in r.iter_content(chunk_size=4096):
+                if not chunk:
+                    if time.time() - last_frame_time > FRAME_STALL_TIMEOUT:
+                        raise StreamUnavailable("Camera stream stalled")
+                    continue
+
                 byte_buffer += chunk
-                parts = byte_buffer.split(boundary)
+                while True:
+                    jpg_start = byte_buffer.find(b"\xff\xd8")
+                    if jpg_start == -1:
+                        if len(byte_buffer) > MAX_STREAM_BUFFER:
+                            byte_buffer = byte_buffer[-(MAX_STREAM_BUFFER // 2):]
+                        break
 
-                for part in parts[:-1]:
-                    if not part.strip():
-                        continue
-                    
-                    jpg_start = part.find(b'\xff\xd8')
-                    if jpg_start != -1:
-                        jpg_frame = part[jpg_start:]
-                        processed_frame = ai_processor.process_frame(jpg_frame)
-                        yield format_mjpeg_frame(processed_frame)
+                    jpg_end = byte_buffer.find(b"\xff\xd9", jpg_start + 2)
+                    if jpg_end == -1:
+                        if jpg_start > 0:
+                            byte_buffer = byte_buffer[jpg_start:]
+                        break
 
-                byte_buffer = parts[-1]
+                    jpg_frame = byte_buffer[jpg_start:jpg_end + 2]
+                    byte_buffer = byte_buffer[jpg_end + 2:]
+                    processed_frame = ai_processor.process_frame(jpg_frame)
+                    last_frame_time = time.time()
+                    yield format_mjpeg_frame(processed_frame)
 
-        except (requests.exceptions.RequestException, requests.exceptions.HTTPError) as e:
+                if time.time() - last_frame_time > FRAME_STALL_TIMEOUT:
+                    raise StreamUnavailable("Camera stream stalled")
+
+        except (requests.exceptions.RequestException, requests.exceptions.HTTPError, StreamUnavailable) as e:
             print(f"🚨 Camera stream unavailable: {type(e).__name__}. Streaming from buffer.")
             
             # --- IMPROVED FALLBACK ANIMATION LOGIC ---
@@ -736,6 +809,12 @@ if __name__ == "__main__":
     
     print("\nStarting camera stream proxy server with AI capabilities...")
     print(f"ESP32 Camera URL: {ESP32_CAM_URL}")
+    print(
+        "Stream transform: "
+        f"rotate={STREAM_ROTATE}, "
+        f"force_landscape={STREAM_FORCE_LANDSCAPE}, "
+        f"output={STREAM_OUTPUT_WIDTH}x{STREAM_OUTPUT_HEIGHT}"
+    )
     print(f"YOLO Available: {YOLO_AVAILABLE}")
     print(f"MobileNet Available: {MOBILENET_AVAILABLE}")
     

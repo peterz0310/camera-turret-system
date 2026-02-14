@@ -53,7 +53,7 @@ const unsigned long CONTROL_HARD_TIMEOUT_MS = 3000; // Hard timeout: stop even i
 
 // Angular motion settings
 const float HORIZONTAL_GEAR_RATIO = 4.0;  // 4:1 gear ratio for yaw
-const float VERTICAL_GEAR_RATIO = 3.0;    // 2.25:1 gear ratio for tilt
+const float VERTICAL_GEAR_RATIO = 4.67;   // 4.67:1 gear ratio for tilt (12-tooth motor gear, 56-tooth output gear)
 const float STEPS_PER_REVOLUTION = 200.0; // Standard stepper motor (1.8° per step)
 const float DEGREES_PER_REVOLUTION = 360.0;
 
@@ -69,13 +69,16 @@ long verticalCenterPosition = 0;
 bool angularPositioningEnabled = false;
 
 // Servo motor settings for trigger
-const int SERVO_PIN = 27;         // GPIO pin for servo control
-const int SERVO_REST_ANGLE = 0;   // Rest position (trigger not pulled)
-const int SERVO_FIRE_ANGLE = 90;  // Fire position (trigger pulled)
-const int TRIGGER_DELAY_MS = 150; // How long to hold trigger pulled
+const int SERVO_PIN = 27;                 // GPIO pin for servo control
+const int SERVO_REST_ANGLE = 0;           // Rest position (trigger not pulled)
+const int SERVO_FIRE_ANGLE = 90;          // Fire position (trigger pulled)
+const int TRIGGER_MIN_HOLD_MS = 300;      // Minimum time to hold trigger pulled
+const int TRIGGER_MIN_RETURN_MS = 200;    // Minimum time to allow return to rest
+const float TRIGGER_MS_PER_DEGREE = 4.5f; // Conservative timing for MG996R
+const int TRIGGER_MOVE_EXTRA_MS = 150;    // Extra margin for full travel
 const int BURST_SHOT_COUNT = 3;
 const unsigned long BURST_SHOT_INTERVAL_MS = 500;
-const unsigned long BURST_TOTAL_TIMEOUT_MS = BURST_SHOT_COUNT * BURST_SHOT_INTERVAL_MS;
+const unsigned long BURST_EXTRA_TIMEOUT_MS = 500;
 
 // Servo and trigger control variables
 Servo triggerServo;
@@ -83,11 +86,15 @@ volatile bool triggerActive = false; // Prevents overlapping trigger calls
 unsigned long burstStartTime = 0;
 int burstShotCount = 0;
 bool inBurstMode = false;
+unsigned long burstIntervalMs = BURST_SHOT_INTERVAL_MS;
+unsigned long burstTotalTimeoutMs = (BURST_SHOT_COUNT * BURST_SHOT_INTERVAL_MS) + BURST_EXTRA_TIMEOUT_MS;
 
 // Non-blocking trigger timing variables
 unsigned long triggerStartTime = 0;
 bool triggerInFirePosition = false;
 bool triggerReturning = false;
+unsigned long triggerHoldTimeMs = 0;
+unsigned long triggerReturnTimeMs = 0;
 
 // Burst fire needs separate timing from individual trigger pulls
 unsigned long nextBurstShotTime = 0;
@@ -305,6 +312,14 @@ void resetJoystickFilter()
   verticalSmoothedSpeed = 0.0f;
 }
 
+unsigned long computeTriggerMoveTimeMs()
+{
+  int angleDelta = abs(SERVO_FIRE_ANGLE - SERVO_REST_ANGLE);
+  unsigned long computedMoveMs =
+      (unsigned long)(angleDelta * TRIGGER_MS_PER_DEGREE) + TRIGGER_MOVE_EXTRA_MS;
+  return max((unsigned long)TRIGGER_MIN_HOLD_MS, computedMoveMs);
+}
+
 // Non-blocking trigger control functions
 void startTriggerPull()
 {
@@ -313,6 +328,10 @@ void startTriggerPull()
     Serial.println("Trigger already active - ignoring command");
     return;
   }
+
+  unsigned long moveTimeMs = computeTriggerMoveTimeMs();
+  triggerHoldTimeMs = moveTimeMs;
+  triggerReturnTimeMs = max((unsigned long)TRIGGER_MIN_RETURN_MS, moveTimeMs);
 
   triggerActive = true;
   triggerInFirePosition = false;
@@ -332,14 +351,14 @@ void updateTrigger()
   unsigned long currentTime = millis();
   unsigned long elapsed = currentTime - triggerStartTime;
 
-  if (triggerInFirePosition && !triggerReturning && elapsed >= TRIGGER_DELAY_MS)
+  if (triggerInFirePosition && !triggerReturning && elapsed >= triggerHoldTimeMs)
   {
     // Time to return trigger to rest position
     triggerServo.write(SERVO_REST_ANGLE);
     triggerReturning = true;
     Serial.println("Returning trigger to rest");
   }
-  else if (triggerReturning && elapsed >= (TRIGGER_DELAY_MS + 100))
+  else if (triggerReturning && elapsed >= (triggerHoldTimeMs + triggerReturnTimeMs))
   {
     // Trigger sequence complete
     triggerActive = false;
@@ -372,9 +391,13 @@ void startBurstFire()
   inBurstMode = true;
   burstShotCount = 0;
   burstStartTime = millis();
+  unsigned long moveTimeMs = computeTriggerMoveTimeMs();
+  unsigned long triggerCycleMs = moveTimeMs + max((unsigned long)TRIGGER_MIN_RETURN_MS, moveTimeMs);
+  burstIntervalMs = max(BURST_SHOT_INTERVAL_MS, triggerCycleMs);
+  burstTotalTimeoutMs = (burstIntervalMs * BURST_SHOT_COUNT) + BURST_EXTRA_TIMEOUT_MS;
   nextBurstShotTime = burstStartTime; // First shot fires immediately
   Serial.printf("Starting burst fire mode (%d shots, %lums interval)\n",
-                BURST_SHOT_COUNT, BURST_SHOT_INTERVAL_MS);
+                BURST_SHOT_COUNT, burstIntervalMs);
 }
 
 void updateBurstFire()
@@ -392,12 +415,12 @@ void updateBurstFire()
     burstShotCount++;
 
     // Schedule next shot based on configured interval
-    nextBurstShotTime = currentTime + BURST_SHOT_INTERVAL_MS;
+    nextBurstShotTime = currentTime + burstIntervalMs;
   }
 
   // End burst mode after timeout or all shots fired
   unsigned long elapsedTime = currentTime - burstStartTime;
-  if (elapsedTime >= BURST_TOTAL_TIMEOUT_MS || burstShotCount >= BURST_SHOT_COUNT)
+  if (elapsedTime >= burstTotalTimeoutMs || burstShotCount >= BURST_SHOT_COUNT)
   {
     inBurstMode = false;
     Serial.println("Burst fire complete");

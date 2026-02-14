@@ -17,6 +17,20 @@ Edit `.env` to configure your camera URL:
 ESP32_CAM_URL=http://192.168.4.62/stream
 ```
 
+Optional stream orientation/performance settings:
+
+```env
+# Rotate incoming frames before serving: 0, 90, 180, or 270
+STREAM_ROTATE=90
+
+# If rotation makes the frame portrait, center-crop to 16:9 landscape
+STREAM_FORCE_LANDSCAPE=true
+
+# Optional output resize (lower values reduce CPU/network load)
+STREAM_OUTPUT_WIDTH=640
+STREAM_OUTPUT_HEIGHT=360
+```
+
 ## Endpoints
 
 - `/` - Simple web page to view the stream
